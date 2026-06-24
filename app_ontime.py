@@ -2,6 +2,17 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 
+# 1. FUNCIÓN GLOBAL DE FORMATO DE TIEMPO (Declarada al inicio para evitar NameError)
+def formatear_minutos_a_string(minutos_totales):
+    if pd.isna(minutos_totales) or minutos_totales <= 0:
+        return "0 min"
+    hrs = int(minutos_totales // 60)
+    mins = int(minutos_totales % 60)
+    if hrs > 0:
+        return f"{hrs} hrs {mins} min" if mins > 0 else f"{hrs} hrs"
+    return f"{mins} min"
+
+# Configuración de página de Streamlit
 st.set_page_config(page_title="Torre de Control DYPAQ - Circuitos", layout="wide", page_icon="📊")
 
 st.title("📊 Torre de Control de Circuitos Nacionales | DYPAQ")
@@ -119,16 +130,6 @@ if uploaded_file is not None:
         df_unificado['MINUTOS_DIF_LLEGADA'] = [x[0] for x in res_llegada]
         df_unificado['ESTATUS_LLEGADA'] = [x[1] for x in res_llegada]
 
-        # --- FUNCIÓN FORMATO DE TIEMPO (X hrs Y min) ---
-        def formatear_minutos_a_string(minutos_totales):
-            if pd.isna(minutos_totales) or minutos_totales <= 0:
-                return "0 min"
-            hrs = int(minutos_totales // 60)
-            mins = int(minutos_totales % 60)
-            if hrs > 0:
-                return f"{hrs} hrs {mins} min" if mins > 0 else f"{hrs} hrs"
-            return f"{mins} min"
-
         # --- FILTROS SIDEBAR ---
         st.sidebar.header("🕹️ Filtros de Control")
         meses_disp = list(df_unificado.sort_values('Mes_Num')['Mes'].unique())
@@ -139,6 +140,7 @@ if uploaded_file is not None:
         origen_sel = st.sidebar.multiselect("Plaza Origen", origen_disp, default=origen_disp)
         df_f2 = df_f1[df_f1['ORIGEN'].isin(origen_sel)]
         
+        # Filtro de destino dinámico inteligente (en cascada)
         destino_disp = sorted(df_f2['DESTINO'].unique().tolist())
         destino_sel = st.sidebar.multiselect("Plaza Destino", destino_disp, default=destino_disp)
         
@@ -230,10 +232,10 @@ if uploaded_file is not None:
                         Maximo_Minutos=('MINUTOS_DIF_SALIDA', 'max')
                     ).reset_index().sort_values(by='Viajes_Demorados', ascending=False)
                     
-                    rutas_sal['Retraso Promedio'] = rutas_sal['Promedio_Minutos'].apply(formatear_minutos_a_string)
-                    rutas_sal['Retraso Máximo'] = rutas_sal['Maximo_Minutos'].apply(formatear_minutos_a_string)
+                    rutas_sal['Retraso Prom'] = rutas_sal['Promedio_Minutos'].apply(formatear_minutos_a_string)
+                    rutas_sal['Retraso Max'] = rutas_sal['Maximo_Minutos'].apply(formatear_minutos_a_string)
                     
-                    st.dataframe(rutas_sal[['ORIGEN', 'DESTINO', 'Viajes_Demorados', 'Retraso Promedio', 'Retraso Máximo']], use_container_width=True, hide_index=True)
+                    st.dataframe(rutas_sal[['ORIGEN', 'DESTINO', 'Viajes_Demorados', 'Retraso Prom', 'Retraso Max']], use_container_width=True, hide_index=True)
                 else:
                     st.success("Sin demoras registradas en salidas.")
                     
@@ -248,10 +250,10 @@ if uploaded_file is not None:
                     ).reset_index().sort_values(by='Viajes_Demorados', ascending=False)
                     
                     r_lleg_df = rutas_lleg.copy()
-                    r_lleg_df['Retraso Promedio'] = r_lleg_df['Promedio_Minutos'].apply(formatear_minutos_a_string)
-                    r_lleg_df['Retraso Máximo'] = r_lleg_df['Maximo_Minutos'].apply(formatear_minutos_a_string)
+                    r_lleg_df['Retraso Prom'] = r_lleg_df['Promedio_Minutos'].apply(formatear_minutos_a_string)
+                    r_lleg_df['Retraso Max'] = r_lleg_df['Maximo_Minutos'].apply(formatear_minutos_a_string)
                     
-                    st.dataframe(r_lleg_df[['ORIGEN', 'DESTINO', 'Viajes_Demorados', 'Retraso Promedio', 'Retraso Máximo']], use_container_width=True, hide_index=True)
+                    st.dataframe(r_lleg_df[['ORIGEN', 'DESTINO', 'Viajes_Demorados', 'Retraso Prom', 'Retraso Max']], use_container_width=True, hide_index=True)
                 else:
                     st.success("Sin demoras registradas en arribos.")
 
