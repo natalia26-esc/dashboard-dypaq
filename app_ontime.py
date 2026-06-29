@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 
-# 1. FUNCIÓN GLOBAL DE FORMATO DE TIEMPO (Declarada al inicio para evitar NameError)
+# 1. FUNCIÓN GLOBAL DE FORMATO DE TIEMPO
 def formatear_minutos_a_string(minutos_totales):
     if pd.isna(minutos_totales) or minutos_totales <= 0:
         return "0 min"
@@ -105,6 +105,7 @@ if uploaded_file is not None:
             except:
                 return None
 
+        # CAMBIO CRÍTICO: Nueva ventana de tolerancia a 30 minutos
         def evaluar_tiempo_absoluto(h_real, h_teorica):
             t_real = parse_horario_flexible(h_real)
             t_teo = parse_horario_flexible(h_teorica)
@@ -118,8 +119,8 @@ if uploaded_file is not None:
             if dif < -720: dif += 1440
             if dif > 720: dif -= 1440
             
-            if dif > 15: return dif, "Demorado"
-            elif dif < -15: return dif, "Antes de Tiempo"
+            if dif > 30: return dif, "Demorado"
+            elif dif < -30: return dif, "Antes de Tiempo"
             else: return dif, "On Time"
 
         res_salida = df_unificado.apply(lambda r: evaluar_tiempo_absoluto(r['HORA SALIDA REAL'], r['TEORICA_SALIDA']), axis=1)
@@ -132,15 +133,26 @@ if uploaded_file is not None:
 
         # --- FILTROS SIDEBAR ---
         st.sidebar.header("🕹️ Filtros de Control")
-        meses_disp = list(df_unificado.sort_values('Mes_Num')['Mes'].unique())
-        mes_sel = st.sidebar.multiselect("Periodo Mensual", meses_disp, default=meses_disp)
-        df_f1 = df_unificado[df_unificado['Mes'].isin(mes_sel)]
         
+        # NUEVO REQUISITO: Filtro por rango de fechas de calendario
+        min_date = df_unificado['FECHA_DT'].min().date() if not df_unificado['FECHA_DT'].isna().all() else datetime.date.today()
+        max_date = df_unificado['FECHA_DT'].max().date() if not df_unificado['FECHA_DT'].isna().all() else datetime.date.today()
+        
+        rango_fechas = st.sidebar.date_input("Filtrar Rango de Fechas", [min_date, max_date], min_value=min_date, max_value=max_date)
+        
+        # Filtrado preventivo por fecha
+        if isinstance(rango_fechas, list) or isinstance(rango_fechas, tuple):
+            if len(rango_fechas) == 2:
+                df_f1 = df_unificado[(df_unificado['FECHA_DT'].dt.date >= rango_fechas[0]) & (df_unificado['FECHA_DT'].dt.date <= rango_fechas[1])]
+            else:
+                df_f1 = df_unificado[df_unificado['FECHA_DT'].dt.date == rango_fechas[0]]
+        else:
+            df_f1 = df_unificado[df_unificado['FECHA_DT'].dt.date == rango_fechas]
+
         origen_disp = sorted(df_f1['ORIGEN'].unique().tolist())
         origen_sel = st.sidebar.multiselect("Plaza Origen", origen_disp, default=origen_disp)
         df_f2 = df_f1[df_f1['ORIGEN'].isin(origen_sel)]
         
-        # Filtro de destino dinámico inteligente (en cascada)
         destino_disp = sorted(df_f2['DESTINO'].unique().tolist())
         destino_sel = st.sidebar.multiselect("Plaza Destino", destino_disp, default=destino_disp)
         
@@ -153,24 +165,31 @@ if uploaded_file is not None:
         st.markdown("#### 📊 Resumen Ejecutivo de Desempeño")
         k1, k2, k3, k4 = st.columns(4)
         
-        pct_sal = (df_sal_v['ESTATUS_SALIDA'] == 'On Time').sum() / len(df_sal_v) * 100 if len(df_sal_v)>0 else 0
-        k1.metric("On-Time Despacho (Salidas)", f"{pct_sal:.1f}%", f"{len(df_sal_v)} viajes con horario")
+        # Conteo e indicadores porcentuales individuales
+        tot_sal_ok = (df_sal_v['ESTATUS_SALIDA'] == 'On Time').sum()
+        tot_lleg_ok = (df_lleg_v['ESTATUS_LLEGADA'] == 'On Time').sum()
         
-        pct_lleg = (df_lleg_v['ESTATUS_LLEGADA'] == 'On Time').sum() / len(df_lleg_v) * 100 if len(df_lleg_v)>0 else 0
-        k2.metric("On-Time Cumplimiento (Llegadas)", f"{pct_lleg:.1f}%", f"{len(df_lleg_v)} viajes con arribo")
+        pct_sal = (tot_sal_ok / len(df_sal_v) * 100) if len(df_sal_v) > 0 else 0
+        pct_lleg = (tot_lleg_ok / len(df_lleg_v) * 100) if len(df_lleg_v) > 0 else 0
+        
+        # NUEVO REQUISITO: On-Time General (Salidas + Llegadas en conjunto)
+        total_eventos_validos = len(df_sal_v) + len(df_lleg_v)
+        total_on_time_conjunto = tot_sal_ok + tot_lleg_ok
+        pct_conjunto = (total_on_time_conjunto / total_eventos_validos * 100) if total_eventos_validos > 0 else 0
+        
+        k1.metric("On-Time Despacho (Salidas)", f"{pct_sal:.1f}%", f"{tot_sal_ok} de {len(df_sal_v)} a tiempo")
+        k2.metric("On-Time Cumplimiento (Llegadas)", f"{pct_lleg:.1f}%", f"{tot_lleg_ok} de {len(df_lleg_v)} a tiempo")
+        k3.metric("🎯 On-Time General de la Red", f"{pct_conjunto:.1f}%", "Eficiencia integrada (Salidas + Llegadas)")
         
         avg_sal_min = df_sal_v[df_sal_v['MINUTOS_DIF_SALIDA'] > 0]['MINUTOS_DIF_SALIDA'].mean()
         txt_avg_sal = formatear_minutos_a_string(avg_sal_min) if pd.notna(avg_sal_min) else "0 min"
-        k3.metric("Retraso Promedio en Salida", txt_avg_sal, "Desviación promedio por circuito")
-        
-        pendientes = (df_filtrado['ESTATUS_LLEGADA'] == "Pendiente / Sin Captura").sum()
-        k4.metric("Viajes con Llegada Pendiente", f"{pendientes} Viajes", "Falta reporte en destino")
+        k4.metric("Retraso Promedio en Salida", txt_avg_sal, "Desviación andén origen")
         
         st.markdown("---")
         
         # --- PESTAÑAS ---
         tab_volumen, tab_rutas, tab_operadores, tab_incidencias = st.tabs([
-            "🌐 Análisis por Mes y Día", 
+            "🌐 Análisis por Periodo y Día", 
             "🚨 Análisis de Rutas Críticas", 
             "👤 Confiabilidad de Operadores",
             "💬 Bitácora de Incidencias"
@@ -224,7 +243,7 @@ if uploaded_file is not None:
             
             with col_r1:
                 st.markdown("📋 **Desviaciones en Despacho (SALIDAS)**")
-                df_dem_sal = df_sal_v[df_sal_v['MINUTOS_DIF_SALIDA'] > 15]
+                df_dem_sal = df_sal_v[df_sal_v['MINUTOS_DIF_SALIDA'] > 30]
                 if len(df_dem_sal) > 0:
                     rutas_sal = df_dem_sal.groupby(['ORIGEN', 'DESTINO']).agg(
                         Viajes_Demorados=('FOLIO', 'count'),
@@ -237,11 +256,11 @@ if uploaded_file is not None:
                     
                     st.dataframe(rutas_sal[['ORIGEN', 'DESTINO', 'Viajes_Demorados', 'Retraso Prom', 'Retraso Max']], use_container_width=True, hide_index=True)
                 else:
-                    st.success("Sin demoras registradas en salidas.")
+                    st.success("Sin demoras fuera de la tolerancia de 30 min en salidas.")
                     
             with col_r2:
                 st.markdown("📋 **Desviaciones en Destino Final (LLEGADAS)**")
-                df_dem_lleg = df_lleg_v[df_lleg_v['MINUTOS_DIF_LLEGADA'] > 15]
+                df_dem_lleg = df_lleg_v[df_lleg_v['MINUTOS_DIF_LLEGADA'] > 30]
                 if len(df_dem_lleg) > 0:
                     rutas_lleg = df_dem_lleg.groupby(['ORIGEN', 'DESTINO']).agg(
                         Viajes_Demorados=('FOLIO', 'count'),
@@ -255,7 +274,7 @@ if uploaded_file is not None:
                     
                     st.dataframe(r_lleg_df[['ORIGEN', 'DESTINO', 'Viajes_Demorados', 'Retraso Prom', 'Retraso Max']], use_container_width=True, hide_index=True)
                 else:
-                    st.success("Sin demoras registradas en arribos.")
+                    st.success("Sin demoras fuera de la tolerancia de 30 min en arribos.")
 
         with tab_operadores:
             st.subheader("Matriz de Confiabilidad Unificada por Operador")
