@@ -71,8 +71,9 @@ if uploaded_file is not None:
             df_tmp['DESTINO'] = df_tmp['DESTINO'].str.replace('MERIDA ANDREA', 'MERIDA').str.replace('CDC-MERIDA', 'MERIDA')
             df_tmp['ORIGEN'] = df_tmp['ORIGEN'].str.replace('MERIDA ANDREA', 'MERIDA').str.replace('CDC-MERIDA', 'MERIDA')
         
+        # Limpieza y conversión robusta de fechas
         df_master['FECHA_DT'] = pd.to_datetime(df_master['FECHA_SISTEMA'], errors='coerce')
-        df_master = df_master[df_master['FECHA_DT'].dt.year > 2020]
+        df_master = df_master.dropna(subset=['FECHA_DT'])
         
         # Días de la semana en español
         dias_espanol = {0: 'Lunes', 1: 'Martes', 2: 'Miércoles', 3: 'Jueves', 4: 'Viernes', 5: 'Sábado', 6: 'Domingo'}
@@ -106,7 +107,7 @@ if uploaded_file is not None:
             except:
                 return None
 
-        # Lógica de Negocio Reestructurada: Tolerancia asimétrica a 30 min (Salida/Llegada antes = On Time)
+        # Lógica Asimétrica: Adelantos permitidos (On Time). Retrasos > 30m (Demorado)
         def evaluar_tiempo_absoluto(h_real, h_teorica):
             t_real = parse_horario_flexible(h_real)
             t_teo = parse_horario_flexible(h_teorica)
@@ -136,11 +137,14 @@ if uploaded_file is not None:
         # --- FILTROS SIDEBAR ---
         st.sidebar.header("🕹️ Filtros de Control")
         
-        min_date = df_unificado['FECHA_DT'].min().date() if not df_unificado['FECHA_DT'].isna().all() else datetime.date.today()
-        max_date = df_unificado['FECHA_DT'].max().date() if not df_unificado['FECHA_DT'].isna().all() else datetime.date.today()
+        # Límites dinámicos de fechas calculados puros del archivo cargado
+        min_date = df_unificado['FECHA_DT'].min().date()
+        max_date = df_unificado['FECHA_DT'].max().date()
         
-        rango_fechas = st.sidebar.date_input("Filtrar Rango de Fechas", [min_date, max_date], min_value=min_date, max_value=max_date)
+        # CORRECCIÓN CLAVE: El date_input ahora no tiene restricciones de min/max rígidas que bloqueen el refresco
+        rango_fechas = st.sidebar.date_input("Filtrar Rango de Fechas", [min_date, max_date])
         
+        # Procesamiento dinámico del rango seleccionado por el usuario corporativo
         if isinstance(rango_fechas, list) or isinstance(rango_fechas, tuple):
             if len(rango_fechas) == 2:
                 df_f1 = df_unificado[(df_unificado['FECHA_DT'].dt.date >= rango_fechas[0]) & (df_unificado['FECHA_DT'].dt.date <= rango_fechas[1])]
@@ -158,6 +162,7 @@ if uploaded_file is not None:
         
         df_filtrado = df_f2[df_f2['DESTINO'].isin(destino_sel)]
 
+        # Independización completa de muestras para evitar pérdidas de folios en andén
         df_sal_v = df_filtrado[df_filtrado['ESTATUS_SALIDA'].isin(['On Time', 'Demorado'])]
         df_lleg_v = df_filtrado[df_filtrado['ESTATUS_LLEGADA'].isin(['On Time', 'Demorado'])]
         
@@ -243,7 +248,6 @@ if uploaded_file is not None:
                     
                     df_destinos_perf['% Eficiencia'] = (df_destinos_perf['Salidas_A_Tiempo'] / df_destinos_perf['Total_Viajes'] * 100).round(1)
                     df_reporte_destinos = df_destinos_perf[['ORIGEN', 'DESTINO', 'Total_Viajes', '% Eficiencia']].sort_values(by='% Eficiencia', ascending=False)
-                    
                     st.dataframe(df_reporte_destinos, use_container_width=True, hide_index=True)
 
         with tab_rutas:
@@ -290,21 +294,15 @@ if uploaded_file is not None:
             st.markdown("### 📅 Análisis de Frecuencia y Fechas: ¿Cuándo fallan las Salidas Críticas?")
             if len(df_dem_sal) > 0:
                 df_dem_sal['Fecha_Corta'] = df_dem_sal['FECHA_DT'].dt.strftime('%Y-%m-%d')
-                
-                # CORRECCIÓN DEFINITIVA DE SEGURIDAD CONTRA EL LENGTH MISMATCH
                 df_frec_fechas = df_dem_sal.groupby(['ORIGEN', 'DESTINO', 'Fecha_Corta', 'Día de la Semana']).agg(
                     Viajes_Demorados=('FOLIO', 'count'),
                     Retraso_Promedio=('MINUTOS_DIF_SALIDA', 'mean')
                 ).reset_index()
                 
                 df_frec_fechas['Retraso_Promedio'] = df_frec_fechas['Retraso_Promedio'].apply(formatear_minutos_a_string)
-                
-                # Mapeo y selección explícita y segura por nombre
                 df_reporte_frecuencias = df_frec_fechas[['ORIGEN', 'DESTINO', 'Fecha_Corta', 'Día de la Semana', 'Viajes_Demorados', 'Retraso_Promedio']].copy()
                 df_reporte_frecuencias.columns = ['Origen', 'Destino', 'Fecha del Retraso', 'Día de la Semana', 'Viajes Demorados', 'Retraso Promedio']
-                df_reporte_frecuencias = df_reporte_frecuencias.sort_values(by='Fecha del Retraso')
-                
-                st.dataframe(df_reporte_frecuencias, use_container_width=True, hide_index=True)
+                st.dataframe(df_reporte_frecuencias.sort_values(by='Fecha del Retraso'), use_container_width=True, hide_index=True)
             else:
                 st.info("No hay datos de retrasos en salidas disponibles para desglosar por fecha.")
 
@@ -337,7 +335,6 @@ if uploaded_file is not None:
 
         with tab_incidencias:
             st.subheader("Bitácora General de Incidencias Operativas")
-            
             df_comentarios = df_filtrado[df_filtrado['COMENTARIOS_SISTEMA'].notna() & (df_filtrado['COMENTARIOS_SISTEMA'] != "") & (df_filtrado['COMENTARIOS_SISTEMA'] != "0") & (df_filtrado['COMENTARIOS_SISTEMA'] != 0)]
             
             df_inc_tabla = pd.DataFrame()
@@ -349,7 +346,6 @@ if uploaded_file is not None:
             df_inc_tabla['Estatus Salida'] = df_comentarios['ESTATUS_SALIDA']
             df_inc_tabla['Estatus Llegada'] = df_comentarios['ESTATUS_LLEGADA']
             df_inc_tabla['Observaciones Registradas'] = df_comentarios['COMENTARIOS_SISTEMA']
-            
             st.dataframe(df_inc_tabla, use_container_width=True, hide_index=True)
 
     except Exception as e:
