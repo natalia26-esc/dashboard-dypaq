@@ -60,7 +60,7 @@ if uploaded_file is not None:
                 
         df_master = pd.concat(listado, ignore_index=True)
         
-        # HOMOLOGACIÓN DE TEXTO Y REMOCIÓN DE ACENTOS (Evita fallas por CANCÚN vs CANCUN)
+        # HOMOLOGACIÓN DE TEXTO Y REMOCIÓN DE ACENTOS (Evita fallas por CANCÚN vs CANCUN, VHS vs VILLAHERMOSA)
         for df_tmp in [df_master, df_horarios]:
             for col in ['ORIGEN', 'DESTINO']:
                 if col in df_tmp.columns:
@@ -68,6 +68,8 @@ if uploaded_file is not None:
                     df_tmp[col] = df_tmp[col].str.replace('Á', 'A').str.replace('É', 'E').str.replace('Í', 'I').str.replace('Ó', 'O').str.replace('Ú', 'U')
                     df_tmp[col] = df_tmp[col].str.replace('GUTIERREZ', '').str.strip()
                     df_tmp[col] = df_tmp[col].str.replace('MERIDA ANDREA', 'MERIDA').str.replace('CDC-MERIDA', 'MERIDA')
+                    # Homologación de abreviaturas críticas para asegurar el cruce
+                    df_tmp[col] = df_tmp[col].replace({'VHS': 'VILLAHERMOSA', 'VSA': 'VILLAHERMOSA', 'MID': 'MERIDA', 'TLC': 'TOLUCA', 'VER': 'VERACRUZ', 'CUN': 'CANCUN'})
         
         # Procesamiento flexible y ordenación de fechas desordenadas
         df_master['FECHA_DT'] = pd.to_datetime(df_master['FECHA_SISTEMA'], errors='coerce')
@@ -88,10 +90,11 @@ if uploaded_file is not None:
             'May': 'Mayo', 'June': 'Junio', 'July': 'Julio', 'August': 'Agosto',
             'September': 'Septiembre', 'October': 'Octubre', 'November': 'Noviembre', 'December': 'Diciembre'
         }
+        df_master['Año'] = df_master['FECHA_DT'].dt.year
         df_master['Mes_Num'] = df_master['FECHA_DT'].dt.month
         df_master['Mes'] = df_master['FECHA_DT'].dt.strftime('%B').map(meses_espanol)
         
-        # Construcción unificada de la llave de cruce sin acentos
+        # Construcción unificada de la llave de cruce sin acentos ni espacios
         df_master['RUTA_KEY'] = df_master['ORIGEN'].str.replace(" ", "") + "_" + df_master['DESTINO'].str.replace(" ", "")
         df_horarios['RUTA_KEY'] = df_horarios['ORIGEN'].str.replace(" ", "") + "_" + df_horarios['DESTINO'].str.replace(" ", "")
         
@@ -111,7 +114,6 @@ if uploaded_file is not None:
             except:
                 return None
 
-        # Nueva Regla Logística: Adelanto = On Time. Retrasos > 30 min = Demorado.
         def evaluar_tiempo_absoluto(h_real, h_teorica):
             t_real = parse_horario_flexible(h_real)
             t_teo = parse_horario_flexible(h_teorica)
@@ -138,18 +140,31 @@ if uploaded_file is not None:
 
         # --- FILTROS SIDEBAR ---
         st.sidebar.header("🕹️ Filtros de Control")
-        min_date = df_unificado['FECHA_DT'].min().date()
-        max_date = df_unificado['FECHA_DT'].max().date()
         
-        rango_fechas = st.sidebar.date_input("Filtrar Rango de Fechas", [min_date, max_date])
+        # Filtros rápidos por Periodo Estructurado (Año / Mes)
+        lista_anos = sorted(df_unificado['Año'].unique().tolist())
+        ano_sel = st.sidebar.selectbox("Año Corporativo", lista_anos, index=len(lista_anos)-1)
         
-        if isinstance(rango_fechas, list) or isinstance(rango_fechas, tuple):
-            if len(rango_fechas) == 2:
-                df_f1 = df_unificado[(df_unificado['FECHA_DT'].dt.date >= rango_fechas[0]) & (df_unificado['FECHA_DT'].dt.date <= rango_fechas[1])]
-            else:
-                df_f1 = df_unificado[df_unificado['FECHA_DT'].dt.date == rango_fechas[0]]
+        lista_meses = ['Todos'] + sorted(df_unificado[df_unificado['Año'] == ano_sel]['Mes'].dropna().unique().tolist())
+        mes_sel = st.sidebar.selectbox("Mes de Operación", lista_meses, index=0)
+        
+        df_f_base = df_unificado[df_unificado['Año'] == ano_sel]
+        if mes_sel != 'Todos':
+            df_f_base = df_f_base[df_f_base['Mes'] == mes_sel]
+
+        # Filtro de Calendario como opción secundaria o refinamiento
+        min_date = df_f_base['FECHA_DT'].min().date() if len(df_f_base) > 0 else datetime.date.today()
+        max_date = df_f_base['FECHA_DT'].max().date() if len(df_f_base) > 0 else datetime.date.today()
+        
+        rango_fechas = st.sidebar.date_input("Refinar Rango de Fechas Exactas", [min_date, max_date])
+        
+        # Validación robusta de fechas
+        if isinstance(rango_fechas, (list, tuple)) and len(rango_fechas) == 2:
+            df_f1 = df_f_base[(df_f_base['FECHA_DT'].dt.date >= rango_fechas[0]) & (df_f_base['FECHA_DT'].dt.date <= rango_fechas[1])]
+        elif isinstance(rango_fechas, (list, tuple)) and len(rango_fechas) == 1:
+            df_f1 = df_f_base[df_f_base['FECHA_DT'].dt.date == rango_fechas[0]]
         else:
-            df_f1 = df_unificado[df_unificado['FECHA_DT'].dt.date == rango_fechas]
+            df_f1 = df_f_base
 
         origen_disp = sorted(df_f1['ORIGEN'].unique().tolist())
         origen_sel = st.sidebar.multiselect("Plaza Origen", origen_disp, default=origen_disp)
@@ -280,7 +295,6 @@ if uploaded_file is not None:
                     Llegadas_On_Time=('ESTATUS_LLEGADA', lambda x: (x == 'On Time').sum())
                 ).reset_index()
                 
-                # CORRECCIÓN EN OPERADORES: División directa limpia aplicada
                 op_stats['% On-Time Salida'] = (op_stats['Salidas_On_Time'] / op_stats['Salidas_Evaluadas'] * 100).fillna(0)
                 op_stats['% On-Time Llegada'] = (op_stats['Llegadas_On_Time'] / op_stats['Llegadas_Evaluadas'] * 100).fillna(0)
                 op_stats['% On-Time General'] = (op_stats['% On-Time Salida'] + op_stats['% On-Time Llegada']) / 2
@@ -291,14 +305,15 @@ if uploaded_file is not None:
             st.subheader("Bitácora General de Incidencias Operativas")
             df_comentarios = df_filtrado[df_filtrado['COMENTARIOS_SISTEMA'].notna() & (df_filtrado['COMENTARIOS_SISTEMA'] != "") & (df_filtrado['COMENTARIOS_SISTEMA'] != "0") & (df_filtrado['COMENTARIOS_SISTEMA'] != 0)]
             df_inc_tabla = pd.DataFrame()
-            df_inc_tabla['Fecha'] = df_comentarios['FECHA_DT'].dt.strftime('%Y-%m-%d')
-            df_inc_tabla['Folio'] = df_comentarios['FOLIO'].fillna("N/A")
-            df_inc_tabla['Origen'] = df_comentarios['ORIGEN']
-            df_inc_tabla['Destino'] = df_comentarios['DESTINO']
-            df_inc_tabla['Operador'] = df_comentarios['OPERADOR'].fillna("N/E")
-            df_inc_tabla['Estatus Salida'] = df_comentarios['ESTATUS_SALIDA']
-            df_inc_tabla['Estatus Llegada'] = df_comentarios['ESTATUS_LLEGADA']
-            df_inc_tabla['Observaciones Registradas'] = df_comentarios['COMENTARIOS_SISTEMA']
+            if len(df_comentarios) > 0:
+                df_inc_tabla['Fecha'] = df_comentarios['FECHA_DT'].dt.strftime('%Y-%m-%d')
+                df_inc_tabla['Folio'] = df_comentarios['FOLIO'].fillna("N/A")
+                df_inc_tabla['Origen'] = df_comentarios['ORIGEN']
+                df_inc_tabla['Destino'] = df_comentarios['DESTINO']
+                df_inc_tabla['Operador'] = df_comentarios['OPERADOR'].fillna("N/E")
+                df_inc_tabla['Estatus Salida'] = df_comentarios['ESTATUS_SALIDA']
+                df_inc_tabla['Estatus Llegada'] = df_comentarios['ESTATUS_LLEGADA']
+                df_inc_tabla['Observaciones Registradas'] = df_comentarios['COMENTARIOS_SISTEMA']
             st.dataframe(df_inc_tabla, use_container_width=True, hide_index=True)
 
     except Exception as e:
