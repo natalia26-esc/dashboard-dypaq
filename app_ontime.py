@@ -106,7 +106,7 @@ if uploaded_file is not None:
             except:
                 return None
 
-        # Evaluación de ventanas de tiempo (Tolerancia 30 min)
+        # NUEVA LÓGICA DE NEGOCIO: Tolerancias asimétricas (Adelantos permitidos -> On Time)
         def evaluar_tiempo_absoluto(h_real, h_teorica):
             t_real = parse_horario_flexible(h_real)
             t_teo = parse_horario_flexible(h_teorica)
@@ -117,12 +117,15 @@ if uploaded_file is not None:
             min_teo = t_teo.hour * 60 + t_teo.minute
             dif = min_real - min_teo
             
+            # Ajuste de cambio de día en formato 24 horas
             if dif < -720: dif += 1440
             if dif > 720: dif -= 1440
             
-            if dif > 30: return dif, "Demorado"
-            elif dif < -30: return dif, "Antes de Tiempo"
-            else: return dif, "On Time"
+            # Si se pasa de los 30 minutos de retraso, es demorado. Todo lo demás (a la hora o antes) es On Time.
+            if dif > 30: 
+                return dif, "Demorado"
+            else: 
+                return dif, "On Time"
 
         res_salida = df_unificado.apply(lambda r: evaluar_tiempo_absoluto(r['HORA SALIDA REAL'], r['TEORICA_SALIDA']), axis=1)
         df_unificado['MINUTOS_DIF_SALIDA'] = [x[0] for x in res_salida]
@@ -157,13 +160,12 @@ if uploaded_file is not None:
         
         df_filtrado = df_f2[df_f2['DESTINO'].isin(destino_sel)]
 
-        df_sal_v = df_filtrado[df_filtrado['ESTATUS_SALIDA'].isin(['On Time', 'Demorado', 'Antes de Tiempo'])]
-        df_lleg_v = df_filtrado[df_filtrado['ESTATUS_LLEGADA'].isin(['On Time', 'Demorado', 'Antes de Tiempo'])]
+        df_sal_v = df_filtrado[df_filtrado['ESTATUS_SALIDA'].isin(['On Time', 'Demorado'])]
+        df_lleg_v = df_filtrado[df_filtrado['ESTATUS_LLEGADA'].isin(['On Time', 'Demorado'])]
         
         # --- RESUMEN KPIs DIRECTIVOS ---
         st.markdown("#### 📊 Resumen Ejecutivo de Desempeño")
         
-        # Fila 1: Porcentajes de Cumplimiento
         k1, k2, k3 = st.columns(3)
         tot_sal_ok = (df_sal_v['ESTATUS_SALIDA'] == 'On Time').sum()
         tot_lleg_ok = (df_lleg_v['ESTATUS_LLEGADA'] == 'On Time').sum()
@@ -175,21 +177,20 @@ if uploaded_file is not None:
         total_on_time_conjunto = tot_sal_ok + tot_lleg_ok
         pct_conjunto = (total_on_time_conjunto / total_eventos_validos * 100) if total_eventos_validos > 0 else 0
         
-        k1.metric("On-Time Despacho (Salidas)", f"{pct_sal:.1f}%", f"{tot_sal_ok} de {len(df_sal_v)} a tiempo")
-        k2.metric("On-Time Cumplimiento (Llegadas)", f"{pct_lleg:.1f}%", f"{tot_lleg_ok} de {len(df_lleg_v)} a tiempo")
+        k1.metric("On-Time Despacho (Salidas)", f"{pct_sal:.1f}%", f"{tot_sal_ok} de {len(df_sal_v)} a tiempo (Colchón 30m)")
+        k2.metric("On-Time Cumplimiento (Llegadas)", f"{pct_lleg:.1f}%", f"{tot_lleg_ok} de {len(df_lleg_v)} a tiempo (Colchón 30m)")
         k3.metric("🎯 On-Time General de la Red", f"{pct_conjunto:.1f}%", "Eficiencia integrada (Salidas + Llegadas)")
         
-        # NUEVO REQUISITO: Fila 2 para Tiempos Promedio de Desviación Soportando Salidas y Llegadas
         st.write("") 
         k_time1, k_time2 = st.columns(2)
         
         avg_sal_min = df_sal_v[df_sal_v['MINUTOS_DIF_SALIDA'] > 0]['MINUTOS_DIF_SALIDA'].mean()
         txt_avg_sal = formatear_minutos_a_string(avg_sal_min) if pd.notna(avg_sal_min) else "0 min"
-        k_time1.metric("Retraso Promedio en Salida", txt_avg_sal, "Desviación andén origen")
+        k_time1.metric("Retraso Promedio en Salida", txt_avg_sal, "Desviación andén origen (Solo retrasos)")
         
         avg_lleg_min = df_lleg_v[df_lleg_v['MINUTOS_DIF_LLEGADA'] > 0]['MINUTOS_DIF_LLEGADA'].mean()
         txt_avg_lleg = formatear_minutos_a_string(avg_lleg_min) if pd.notna(avg_lleg_min) else "0 min"
-        k_time2.metric("Retraso Promedio en Arribo (Llegadas)", txt_avg_lleg, "Desviación destino final")
+        k_time2.metric("Retraso Promedio en Arribo (Llegadas)", txt_avg_lleg, "Desviación destino final (Solo retrasos)")
         
         st.markdown("---")
         
@@ -209,7 +210,7 @@ if uploaded_file is not None:
                 if len(df_sal_v) > 0:
                     fig_m_sal = px.histogram(df_sal_v, x='Mes', color='ESTATUS_SALIDA', barmode='group',
                                              labels={'count': 'Viajes', 'Mes': 'Mes'},
-                                             color_discrete_map={'On Time':'#2ca02c', 'Demorado':'#d62728', 'Antes de Tiempo':'#1f77b4'})
+                                             color_discrete_map={'On Time':'#2ca02c', 'Demorado':'#d62728'})
                     fig_m_sal.update_layout(yaxis_title="Cantidad de Viajes")
                     st.plotly_chart(fig_m_sal, use_container_width=True)
             
@@ -218,7 +219,7 @@ if uploaded_file is not None:
                 if len(df_sal_v) > 0:
                     df_dias = df_sal_v.sort_values('Dia_Semana_Num')
                     fig_d_sal = px.histogram(df_dias, x='Día de la Semana', color='ESTATUS_SALIDA', barmode='group',
-                                             color_discrete_map={'On Time':'#2ca02c', 'Demorado':'#d62728', 'Antes de Tiempo':'#1f77b4'})
+                                             color_discrete_map={'On Time':'#2ca02c', 'Demorado':'#d62728'})
                     fig_d_sal.update_layout(yaxis_title="Cantidad de Viajes")
                     st.plotly_chart(fig_d_sal, use_container_width=True)
             
@@ -282,30 +283,23 @@ if uploaded_file is not None:
                 else:
                     st.success("Sin demoras fuera de la tolerancia de 30 min en arribos.")
             
-            # NUEVO REQUISITO: Ver de qué días de la semana son los viajes demorados en salida
+            # REQUISITO OPTIMIZADO: Análisis de frecuencias incluyendo Fecha Calendario completa + Día de la Semana
             st.markdown("---")
-            st.markdown("### 📅 Análisis de Frecuencia: ¿Qué días fallan más las Salidas Críticas?")
+            st.markdown("### 📅 Análisis de Frecuencia y Fechas: ¿Cuándo fallan las Salidas Críticas?")
             if len(df_dem_sal) > 0:
-                # Agrupar los viajes demorados por tramo y día de la semana
-                df_dem_dias = df_dem_sal.groupby(['ORIGEN', 'DESTINO', 'Día de la Semana', 'Dia_Semana_Num']).size().reset_index(name='Viajes Demorados')
-                # Ordenar correctamente por el número de día de la semana (Lunes a Domingo)
-                df_dem_dias = df_dem_dias.sort_values(by=['ORIGEN', 'DESTINO', 'Dia_Semana_Num'])
+                df_dem_sal['Fecha_Corta'] = df_dem_sal['FECHA_DT'].dt.strftime('%Y-%m-%d')
                 
-                # Crear un pivote amigable para visualización ejecutiva
-                df_pivote_dias = df_dem_dias.pivot_table(
-                    index=['ORIGEN', 'DESTINO'], 
-                    columns='Día de la Semana', 
-                    values='Viajes Demorados', 
-                    aggfunc='sum'
-                ).fillna(0).astype(int)
+                df_frec_fechas = df_dem_sal.groupby(['ORIGEN', 'DESTINO', 'Fecha_Corta', 'Día de la Semana']).agg(
+                    Viajes_Demorados=('FOLIO', 'count'),
+                    Retraso_Promedio=('MINUTOS_DIF_SALIDA', 'mean')
+                ).reset_index().sort_values(by=['ORIGEN', 'DESTINO', 'Fecha_Corta'])
                 
-                # Asegurar orden lógico de columnas en la tabla si existen
-                columnas_ordenadas = [d for d in dias_espanol.values() if d in df_pivote_dias.columns]
-                df_pivote_dias = df_pivote_dias[columnas_ordenadas].reset_index()
+                df_frec_fechas['Retraso Promedio'] = df_frec_fechas['Retraso_Promedio'].apply(formatear_minutos_a_string)
+                df_frec_fechas.columns = ['Origen', 'Destino', 'Fecha del Retraso', 'Día de la Semana', 'Viajes Demorados', 'Retraso Promedio']
                 
-                st.dataframe(df_pivote_dias, use_container_width=True, hide_index=True)
+                st.dataframe(df_frec_fechas, use_container_width=True, hide_index=True)
             else:
-                st.info("No hay datos de retrasos en salidas disponibles para desglosar por día de la semana.")
+                st.info("No hay datos de retrasos en salidas disponibles para desglosar por fecha.")
 
         with tab_operadores:
             st.subheader("Matriz de Confiabilidad Unificada por Operador")
@@ -314,9 +308,9 @@ if uploaded_file is not None:
             if len(df_filtrado) > 0:
                 op_stats = df_filtrado.groupby(['OPERADOR']).agg(
                     Total_Viajes=('FOLIO', 'count'),
-                    Salidas_Evaluadas=('ESTATUS_SALIDA', lambda x: x.isin(['On Time', 'Demorado', 'Antes de Tiempo']).sum()),
+                    Salidas_Evaluadas=('ESTATUS_SALIDA', lambda x: x.isin(['On Time', 'Demorado']).sum()),
                     Salidas_On_Time=('ESTATUS_SALIDA', lambda x: (x == 'On Time').sum()),
-                    Llegadas_Evaluadas=('ESTATUS_LLEGADA', lambda x: x.isin(['On Time', 'Demorado', 'Antes de Tiempo']).sum()),
+                    Llegadas_Evaluadas=('ESTATUS_LLEGADA', lambda x: x.isin(['On Time', 'Demorado']).sum()),
                     Llegadas_On_Time=('ESTATUS_LLEGADA', lambda x: (x == 'On Time').sum())
                 ).reset_index()
                 
