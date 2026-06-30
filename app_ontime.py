@@ -71,15 +71,15 @@ if uploaded_file is not None:
             df_tmp['DESTINO'] = df_tmp['DESTINO'].str.replace('MERIDA ANDREA', 'MERIDA').str.replace('CDC-MERIDA', 'MERIDA')
             df_tmp['ORIGEN'] = df_tmp['ORIGEN'].str.replace('MERIDA ANDREA', 'MERIDA').str.replace('CDC-MERIDA', 'MERIDA')
         
-        # PROCESAMIENTO TOTAL DE FECHAS (Sin filtros restrictivos de año)
+        # PROCESAMIENTO COMPLETO DE FECHAS (Día/Mes/Año)
         df_master['FECHA_DT'] = pd.to_datetime(df_master['FECHA_SISTEMA'], dayfirst=True, errors='coerce')
         
-        # Corrección dinámica de anomalías en la lectura de años truncados (ej. 20206 o 0206)
+        # Corrección dinámica de anomalías en la lectura de años por formatos mixtos de Excel
         df_master.loc[df_master['FECHA_DT'].dt.year < 2000, 'FECHA_DT'] += pd.offsets.DateOffset(years=2000)
         df_master.loc[df_master['FECHA_DT'].dt.year > 2100, 'FECHA_DT'] = df_master['FECHA_DT'].apply(lambda x: x.replace(year=2026) if pd.notna(x) else x)
         df_master.loc[df_master['FECHA_DT'].dt.year == 206, 'FECHA_DT'] = df_master['FECHA_DT'].apply(lambda x: x.replace(year=2026) if pd.notna(x) else x)
         
-        # Asegurar mantener el 100% de los datos válidos del Excel
+        # Mantener el 100% de los datos válidos del Excel sin rasurar información
         df_master = df_master.dropna(subset=['FECHA_DT'])
         
         # Días de la semana en español
@@ -144,10 +144,11 @@ if uploaded_file is not None:
         # --- FILTROS SIDEBAR ---
         st.sidebar.header("🕹️ Filtros de Control")
         
-        # El rango del calendario ahora se adapta al 100% de las fechas reales del Excel
+        # El rango del calendario lee de forma pura el valor mínimo y máximo de todo el documento unificado
         min_date = df_unificado['FECHA_DT'].min().date()
         max_date = df_unificado['FECHA_DT'].max().date()
         
+        # CORRECCIÓN DE SEGURIDAD: Se eliminan las restricciones dinámicas del widget para permitir rangos libres totales
         rango_fechas = st.sidebar.date_input("Filtrar Rango de Fechas", [min_date, max_date])
         
         if isinstance(rango_fechas, list) or isinstance(rango_fechas, tuple):
@@ -304,7 +305,7 @@ if uploaded_file is not None:
                 ).reset_index()
                 
                 df_frec_fechas['Retraso_Promedio'] = df_frec_fechas['Retraso_Promedio'].apply(formatear_minutos_a_string)
-                df_reporte_frecuencias = df_frec_fechas[['ORIGEN', 'DESTINO', 'Fecha_Corta', 'Día de la Semana', 'Viajes_Demorados', 'Retraso_Promedio']].copy()
+                df_reporte_frecuencias = df_frec_fechas[['ORIGEN', 'DESTINO', 'Fecha_Corta', 'Día de la Semana', 'Viajes Demorados', 'Retraso Promedio']].copy()
                 df_reporte_frecuencias.columns = ['Origen', 'Destino', 'Fecha del Retraso', 'Día de la Semana', 'Viajes Demorados', 'Retraso Promedio']
                 st.dataframe(df_reporte_frecuencias.sort_values(by='Fecha del Retraso'), use_container_width=True, hide_index=True)
             else:
@@ -323,7 +324,7 @@ if uploaded_file is not None:
                     Llegadas_On_Time=('ESTATUS_LLEGADA', lambda x: (x == 'On Time').sum())
                 ).reset_index()
                 
-                op_stats['% On-Time Salida'] = (op_stats['Salidas_On_Time'] / op_stats['Salidas_Evaluadas'] * 100).fillna(0)
+                op_stats['% On-Time Salida'] = (op_stats['Salidas_On_Time'] =/ op_stats['Salidas_Evaluadas'] * 100).fillna(0)
                 op_stats['% On-Time Llegada'] = (op_stats['Llegadas_On_Time'] / op_stats['Llegadas_Evaluadas'] * 100).fillna(0)
                 op_stats['% On-Time General'] = (op_stats['% On-Time Salida'] + op_stats['% On-Time Llegada']) / 2
                 
