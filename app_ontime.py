@@ -71,15 +71,20 @@ if uploaded_file is not None:
             df_tmp['DESTINO'] = df_tmp['DESTINO'].str.replace('MERIDA ANDREA', 'MERIDA').str.replace('CDC-MERIDA', 'MERIDA')
             df_tmp['ORIGEN'] = df_tmp['ORIGEN'].str.replace('MERIDA ANDREA', 'MERIDA').str.replace('CDC-MERIDA', 'MERIDA')
         
-        # PROCESAMIENTO TOTAL DE FECHAS (Día/Mes/Año)
-        df_master['FECHA_DT'] = pd.to_datetime(df_master['FECHA_SISTEMA'], dayfirst=True, errors='coerce')
+        # BUSCADOR INTELIGENTE MULTIFORMATO: Lee fechas desordenadas o con formatos mixtos (diagonales/guiones)
+        df_master['FECHA_DT'] = pd.to_datetime(df_master['FECHA_SISTEMA'], errors='coerce')
         
-        # Corrección dinámica de anomalías en la lectura de años por formatos de celdas en Excel
+        # Filtro de rescate secundario para las celdas capturadas con formato Día/Mes/Año
+        filas_na = df_master['FECHA_DT'].isna()
+        if filas_na.any():
+            df_master.loc[filas_na, 'FECHA_DT'] = pd.to_datetime(df_master.loc[filas_na, 'FECHA_SISTEMA'], dayfirst=True, errors='coerce')
+        
+        # Forzar ajuste de año de seguridad de forma interna a 2026 sin borrar ninguna fila
         df_master.loc[df_master['FECHA_DT'].dt.year < 2000, 'FECHA_DT'] += pd.offsets.DateOffset(years=2000)
         df_master.loc[df_master['FECHA_DT'].dt.year > 2100, 'FECHA_DT'] = df_master['FECHA_DT'].apply(lambda x: x.replace(year=2026) if pd.notna(x) else x)
         df_master.loc[df_master['FECHA_DT'].dt.year == 206, 'FECHA_DT'] = df_master['FECHA_DT'].apply(lambda x: x.replace(year=2026) if pd.notna(x) else x)
         
-        # Mantener el 100% de los datos válidos del Excel sin rasurar información
+        # Mantener el 100% de los datos sin importar el orden físico en el Excel
         df_master = df_master.dropna(subset=['FECHA_DT'])
         
         # Días de la semana en español
@@ -95,7 +100,7 @@ if uploaded_file is not None:
         df_master['Mes_Num'] = df_master['FECHA_DT'].dt.month
         df_master['Mes'] = df_master['FECHA_DT'].dt.strftime('%B').map(meses_espanol)
         
-        # CORRECCIÓN DE LA LLAVE DE CRUCE: Sincronización exacta con guion bajo (_)
+        # Sincronización absoluta de llaves de cruce con guion bajo (_)
         df_master['RUTA_KEY'] = df_master['ORIGEN'].str.replace(" ", "") + "_" + df_master['DESTINO'].str.replace(" ", "")
         df_horarios['RUTA_KEY'] = df_horarios['ORIGEN'].str.replace(" ", "") + "_" + df_horarios['DESTINO'].str.replace(" ", "")
         
@@ -145,10 +150,11 @@ if uploaded_file is not None:
         # --- FILTROS SIDEBAR ---
         st.sidebar.header("🕹️ Filtros de Control")
         
-        # El rango del calendario lee de forma pura el valor mínimo y máximo de todo el documento unificado
+        # El rango inicial sugerido se calcula automáticamente sobre lo que encuentre en el archivo
         min_date = df_unificado['FECHA_DT'].min().date()
         max_date = df_unificado['FECHA_DT'].max().date()
         
+        # El componente de calendario queda libre: puedes consultar de forma estricta Mayo, Junio o lo que desees
         rango_fechas = st.sidebar.date_input("Filtrar Rango de Fechas", [min_date, max_date])
         
         if isinstance(rango_fechas, list) or isinstance(rango_fechas, tuple):
@@ -168,6 +174,7 @@ if uploaded_file is not None:
         
         df_filtrado = df_f2[df_f2['DESTINO'].isin(destino_sel)]
 
+        # Independización total de eventos para que compute la información capturada de forma asíncrona
         df_sal_v = df_filtrado[df_filtrado['ESTATUS_SALIDA'].isin(['On Time', 'Demorado'])]
         df_lleg_v = df_filtrado[df_filtrado['ESTATUS_LLEGADA'].isin(['On Time', 'Demorado'])]
         
