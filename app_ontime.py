@@ -71,8 +71,13 @@ if uploaded_file is not None:
             df_tmp['DESTINO'] = df_tmp['DESTINO'].str.replace('MERIDA ANDREA', 'MERIDA').str.replace('CDC-MERIDA', 'MERIDA')
             df_tmp['ORIGEN'] = df_tmp['ORIGEN'].str.replace('MERIDA ANDREA', 'MERIDA').str.replace('CDC-MERIDA', 'MERIDA')
         
-        # Limpieza y conversión robusta de fechas
+        # CORRECCIÓN QUIRÚRGICA: Forzar el formateo del año correcto a 2026 evitando el error 0206
         df_master['FECHA_DT'] = pd.to_datetime(df_master['FECHA_SISTEMA'], errors='coerce')
+        
+        # Ajuste de año fantasma si Pandas interpreta mal el siglo
+        df_master.loc[df_master['FECHA_DT'].dt.year < 2000, 'FECHA_DT'] += pd.offsets.DateOffset(years=2000)
+        df_master.loc[df_master['FECHA_DT'].dt.year == 206, 'FECHA_DT'] = df_master['FECHA_DT'].apply(lambda x: x.replace(year=2026) if pd.notna(x) else x)
+        
         df_master = df_master.dropna(subset=['FECHA_DT'])
         
         # Días de la semana en español
@@ -137,14 +142,13 @@ if uploaded_file is not None:
         # --- FILTROS SIDEBAR ---
         st.sidebar.header("🕹️ Filtros de Control")
         
-        # Límites dinámicos de fechas calculados puros del archivo cargado
+        # Límites puros del archivo cargado
         min_date = df_unificado['FECHA_DT'].min().date()
         max_date = df_unificado['FECHA_DT'].max().date()
         
-        # CORRECCIÓN CLAVE: El date_input ahora no tiene restricciones de min/max rígidas que bloqueen el refresco
+        # Filtro de calendario libre
         rango_fechas = st.sidebar.date_input("Filtrar Rango de Fechas", [min_date, max_date])
         
-        # Procesamiento dinámico del rango seleccionado por el usuario corporativo
         if isinstance(rango_fechas, list) or isinstance(rango_fechas, tuple):
             if len(rango_fechas) == 2:
                 df_f1 = df_unificado[(df_unificado['FECHA_DT'].dt.date >= rango_fechas[0]) & (df_unificado['FECHA_DT'].dt.date <= rango_fechas[1])]
@@ -153,6 +157,7 @@ if uploaded_file is not None:
         else:
             df_f1 = df_unificado[df_unificado['FECHA_DT'].dt.date == rango_fechas]
 
+        # Filtros dinámicos en cascada reactivados con fechas normalizadas
         origen_disp = sorted(df_f1['ORIGEN'].unique().tolist())
         origen_sel = st.sidebar.multiselect("Plaza Origen", origen_disp, default=origen_disp)
         df_f2 = df_f1[df_f1['ORIGEN'].isin(origen_sel)]
@@ -162,7 +167,6 @@ if uploaded_file is not None:
         
         df_filtrado = df_f2[df_f2['DESTINO'].isin(destino_sel)]
 
-        # Independización completa de muestras para evitar pérdidas de folios en andén
         df_sal_v = df_filtrado[df_filtrado['ESTATUS_SALIDA'].isin(['On Time', 'Demorado'])]
         df_lleg_v = df_filtrado[df_filtrado['ESTATUS_LLEGADA'].isin(['On Time', 'Demorado'])]
         
