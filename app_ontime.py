@@ -106,7 +106,7 @@ if uploaded_file is not None:
             except:
                 return None
 
-        # Lógica de Negocio: Tolerancias asimétricas (Adelantos permitidos -> On Time)
+        # Lógica de Negocio Reestructurada: Tolerancia asimétrica a 30 min (Salida/Llegada antes = On Time)
         def evaluar_tiempo_absoluto(h_real, h_teorica):
             t_real = parse_horario_flexible(h_real)
             t_teo = parse_horario_flexible(h_teorica)
@@ -236,7 +236,7 @@ if uploaded_file is not None:
             with col_pl2:
                 st.markdown("**Detalle de Cumplimiento por Destinos del Origen**")
                 if len(df_sal_v) > 0:
-                    # CORRECCIÓN DE LA CORRESPONDENCIA DE COLUMNAS PARA EVITAR LENGTH MISMATCH
+                    # CORRECCIÓN EXPLÍCITA PARA EVITAR LENGTH MISMATCH EN ASIGNACIÓN
                     df_destinos_perf = df_sal_v.groupby(['ORIGEN', 'DESTINO']).agg(
                         Total_Viajes=('FOLIO', 'count'),
                         Salidas_A_Tiempo=('ESTATUS_SALIDA', lambda x: (x == 'On Time').sum())
