@@ -71,13 +71,15 @@ if uploaded_file is not None:
             df_tmp['DESTINO'] = df_tmp['DESTINO'].str.replace('MERIDA ANDREA', 'MERIDA').str.replace('CDC-MERIDA', 'MERIDA')
             df_tmp['ORIGEN'] = df_tmp['ORIGEN'].str.replace('MERIDA ANDREA', 'MERIDA').str.replace('CDC-MERIDA', 'MERIDA')
         
-        # CORRECCIÓN QUIRÚRGICA: Forzar el formateo del año correcto a 2026 evitando el error 0206
-        df_master['FECHA_DT'] = pd.to_datetime(df_master['FECHA_SISTEMA'], errors='coerce')
+        # PROCESAMIENTO TOTAL DE FECHAS (Sin filtros restrictivos de año)
+        df_master['FECHA_DT'] = pd.to_datetime(df_master['FECHA_SISTEMA'], dayfirst=True, errors='coerce')
         
-        # Ajuste de año fantasma si Pandas interpreta mal el siglo
+        # Corrección dinámica de anomalías en la lectura de años truncados (ej. 20206 o 0206)
         df_master.loc[df_master['FECHA_DT'].dt.year < 2000, 'FECHA_DT'] += pd.offsets.DateOffset(years=2000)
+        df_master.loc[df_master['FECHA_DT'].dt.year > 2100, 'FECHA_DT'] = df_master['FECHA_DT'].apply(lambda x: x.replace(year=2026) if pd.notna(x) else x)
         df_master.loc[df_master['FECHA_DT'].dt.year == 206, 'FECHA_DT'] = df_master['FECHA_DT'].apply(lambda x: x.replace(year=2026) if pd.notna(x) else x)
         
+        # Asegurar mantener el 100% de los datos válidos del Excel
         df_master = df_master.dropna(subset=['FECHA_DT'])
         
         # Días de la semana en español
@@ -112,7 +114,7 @@ if uploaded_file is not None:
             except:
                 return None
 
-        # Lógica Asimétrica: Adelantos permitidos (On Time). Retrasos > 30m (Demorado)
+        # Lógica de Negocio: Tolerancia asimétrica a 30 min (Salida/Llegada antes = On Time)
         def evaluar_tiempo_absoluto(h_real, h_teorica):
             t_real = parse_horario_flexible(h_real)
             t_teo = parse_horario_flexible(h_teorica)
@@ -142,11 +144,10 @@ if uploaded_file is not None:
         # --- FILTROS SIDEBAR ---
         st.sidebar.header("🕹️ Filtros de Control")
         
-        # Límites puros del archivo cargado
+        # El rango del calendario ahora se adapta al 100% de las fechas reales del Excel
         min_date = df_unificado['FECHA_DT'].min().date()
         max_date = df_unificado['FECHA_DT'].max().date()
         
-        # Filtro de calendario libre
         rango_fechas = st.sidebar.date_input("Filtrar Rango de Fechas", [min_date, max_date])
         
         if isinstance(rango_fechas, list) or isinstance(rango_fechas, tuple):
@@ -157,7 +158,6 @@ if uploaded_file is not None:
         else:
             df_f1 = df_unificado[df_unificado['FECHA_DT'].dt.date == rango_fechas]
 
-        # Filtros dinámicos en cascada reactivados con fechas normalizadas
         origen_disp = sorted(df_f1['ORIGEN'].unique().tolist())
         origen_sel = st.sidebar.multiselect("Plaza Origen", origen_disp, default=origen_disp)
         df_f2 = df_f1[df_f1['ORIGEN'].isin(origen_sel)]
