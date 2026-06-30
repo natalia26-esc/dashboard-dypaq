@@ -223,4 +223,85 @@ if uploaded_file is not None:
             with col_pl1:
                 st.markdown("**% On-Time de Salida por CEDIS**")
                 if len(df_sal_v) > 0:
-                    plaza_perf = df_sal_v.groupby('ORIGEN').apply
+                    plaza_perf = df_sal_v.groupby('ORIGEN').apply(lambda x: (x['ESTATUS_SALIDA']=='On Time').sum()/len(x)*100).reset_index(name='% On-Time Salida').sort_values('% On-Time Salida', ascending=False)
+                    fig_bar_p = px.bar(plaza_perf, x='ORIGEN', y='% On-Time Salida', color='% On-Time Salida', color_continuous_scale='RdYlGn', text='% On-Time Salida')
+                    fig_bar_p.update_traces(texttemplate='%{text:.1f}%', textposition='outside')
+                    st.plotly_chart(fig_bar_p, use_container_width=True)
+            with col_pl2:
+                st.markdown("**Detalle de Cumplimiento por Destinos del Origen**")
+                if len(df_sal_v) > 0:
+                    df_destinos_perf = df_sal_v.groupby(['ORIGEN', 'DESTINO']).agg(Total_Viajes=('FOLIO', 'count'), Salidas_A_Tiempo=('ESTATUS_SALIDA', lambda x: (x == 'On Time').sum())).reset_index()
+                    df_destinos_perf['% Eficiencia'] = (df_destinos_perf['Salidas_A_Tiempo'] / df_destinos_perf['Total_Viajes'] * 100).round(1)
+                    st.dataframe(df_destinos_perf[['ORIGEN', 'DESTINO', 'Total_Viajes', '% Eficiencia']].sort_values(by='% Eficiencia', ascending=False), use_container_width=True, hide_index=True)
+
+        with tab_rutas:
+            st.subheader("Tramos con Mayor Desviación en Horas y Minutos")
+            col_r1, col_r2 = st.columns(2)
+            df_dem_sal = df_sal_v[df_sal_v['MINUTOS_DIF_SALIDA'] > 30]
+            df_dem_lleg = df_lleg_v[df_lleg_v['MINUTOS_DIF_LLEGADA'] > 30]
+            
+            with col_r1:
+                st.markdown("📋 **Desviaciones en Despacho (SALIDAS)**")
+                if len(df_dem_sal) > 0:
+                    rutas_sal = df_dem_sal.groupby(['ORIGEN', 'DESTINO']).agg(Viajes_Demorados=('FOLIO', 'count'), Promedio_Minutos=('MINUTOS_DIF_SALIDA', 'mean'), Maximo_Minutos=('MINUTOS_DIF_SALIDA', 'max')).reset_index().sort_values(by='Viajes_Demorados', ascending=False)
+                    rutas_sal['Retraso Prom'] = rutas_sal['Promedio_Minutos'].apply(formatear_minutos_a_string)
+                    rutas_sal['Retraso Max'] = rutas_sal['Maximo_Minutos'].apply(formatear_minutos_a_string)
+                    st.dataframe(rutas_sal[['ORIGEN', 'DESTINO', 'Viajes_Demorados', 'Retraso Prom', 'Retraso Max']], use_container_width=True, hide_index=True)
+                else:
+                    st.success("Sin demoras fuera de la tolerancia de 30 min en salidas.")
+            with col_r2:
+                st.markdown("📋 **Desviaciones en Destino Final (LLEGADAS)**")
+                if len(df_dem_lleg) > 0:
+                    rutas_lleg = df_dem_lleg.groupby(['ORIGEN', 'DESTINO']).agg(Viajes_Demorados=('FOLIO', 'count'), Promedio_Minutos=('MINUTOS_DIF_LLEGADA', 'mean'), Maximo_Minutos=('MINUTOS_DIF_LLEGADA', 'max')).reset_index().sort_values(by='Viajes_Demorados', ascending=False)
+                    rutas_lleg['Retraso Prom'] = rutas_lleg['Promedio_Minutos'].apply(formatear_minutos_a_string)
+                    rutas_lleg['Retraso Max'] = rutas_lleg['Maximo_Minutos'].apply(formatear_minutos_a_string)
+                    st.dataframe(rutas_lleg[['ORIGEN', 'DESTINO', 'Viajes_Demorados', 'Retraso Prom', 'Retraso Max']], use_container_width=True, hide_index=True)
+                else:
+                    st.success("Sin demoras fuera de la tolerancia de 30 min en arribos.")
+            
+            st.markdown("---")
+            st.markdown("### 📅 Análisis de Frecuencia y Fechas: ¿Cuándo fallan las Salidas Críticas?")
+            if len(df_dem_sal) > 0:
+                df_dem_sal['Fecha_Corta'] = df_dem_sal['FECHA_DT'].dt.strftime('%Y-%m-%d')
+                df_frec_fechas = df_dem_sal.groupby(['ORIGEN', 'DESTINO', 'Fecha_Corta', 'Día de la Semana']).agg(Viajes_Demorados=('FOLIO', 'count'), Retraso_Promedio=('MINUTOS_DIF_SALIDA', 'mean')).reset_index()
+                df_frec_fechas['Retraso_Promedio'] = df_frec_fechas['Retraso_Promedio'].apply(formatear_minutos_a_string)
+                df_reporte_frecuencias = df_frec_fechas[['ORIGEN', 'DESTINO', 'Fecha_Corta', 'Día de la Semana', 'Viajes_Demorados', 'Retraso_Promedio']].copy()
+                df_reporte_frecuencias.columns = ['Origen', 'Destino', 'Fecha del Retraso', 'Día de la Semana', 'Viajes Demorados', 'Retraso Promedio']
+                st.dataframe(df_reporte_frecuencias.sort_values(by='Fecha del Retraso'), use_container_width=True, hide_index=True)
+
+        with tab_operadores:
+            st.subheader("Matriz de Confiabilidad Unificada por Operador")
+            if len(df_filtrado) > 0:
+                op_stats = df_filtrado.groupby(['OPERADOR']).agg(
+                    Total_Viajes=('FOLIO', 'count'),
+                    Salidas_Evaluadas=('ESTATUS_SALIDA', lambda x: x.isin(['On Time', 'Demorado']).sum()),
+                    Salidas_On_Time=('ESTATUS_SALIDA', lambda x: (x == 'On Time').sum()),
+                    Llegadas_Evaluadas=('ESTATUS_LLEGADA', lambda x: x.isin(['On Time', 'Demorado']).sum()),
+                    Llegadas_On_Time=('ESTATUS_LLEGADA', lambda x: (x == 'On Time').sum())
+                ).reset_index()
+                
+                # CORRECCIÓN EN OPERADORES: División directa limpia aplicada
+                op_stats['% On-Time Salida'] = (op_stats['Salidas_On_Time'] / op_stats['Salidas_Evaluadas'] * 100).fillna(0)
+                op_stats['% On-Time Llegada'] = (op_stats['Llegadas_On_Time'] / op_stats['Llegadas_Evaluadas'] * 100).fillna(0)
+                op_stats['% On-Time General'] = (op_stats['% On-Time Salida'] + op_stats['% On-Time Llegada']) / 2
+                op_reporte = op_stats[['OPERADOR', 'Total_Viajes', '% On-Time Salida', '% On-Time Llegada', '% On-Time General']].sort_values(by='% On-Time General', ascending=False)
+                st.dataframe(op_reporte.style.format({'% On-Time Salida': '{:.1f}%', '% On-Time Llegada': '{:.1f}%', '% On-Time General': '{:.1f}%', 'Total_Viajes': '{:.0f}'}), use_container_width=True, hide_index=True)
+
+        with tab_incidencias:
+            st.subheader("Bitácora General de Incidencias Operativas")
+            df_comentarios = df_filtrado[df_filtrado['COMENTARIOS_SISTEMA'].notna() & (df_filtrado['COMENTARIOS_SISTEMA'] != "") & (df_filtrado['COMENTARIOS_SISTEMA'] != "0") & (df_filtrado['COMENTARIOS_SISTEMA'] != 0)]
+            df_inc_tabla = pd.DataFrame()
+            df_inc_tabla['Fecha'] = df_comentarios['FECHA_DT'].dt.strftime('%Y-%m-%d')
+            df_inc_tabla['Folio'] = df_comentarios['FOLIO'].fillna("N/A")
+            df_inc_tabla['Origen'] = df_comentarios['ORIGEN']
+            df_inc_tabla['Destino'] = df_comentarios['DESTINO']
+            df_inc_tabla['Operador'] = df_comentarios['OPERADOR'].fillna("N/E")
+            df_inc_tabla['Estatus Salida'] = df_comentarios['ESTATUS_SALIDA']
+            df_inc_tabla['Estatus Llegada'] = df_comentarios['ESTATUS_LLEGADA']
+            df_inc_tabla['Observaciones Registradas'] = df_comentarios['COMENTARIOS_SISTEMA']
+            st.dataframe(df_inc_tabla, use_container_width=True, hide_index=True)
+
+    except Exception as e:
+        st.error(f"Error en el procesamiento de datos de la red: {e}")
+else:
+    st.info("💼 Por favor cargue la matriz de control para inicializar el análisis corporativo.")
