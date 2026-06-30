@@ -148,7 +148,6 @@ if uploaded_file is not None:
         min_date = df_unificado['FECHA_DT'].min().date()
         max_date = df_unificado['FECHA_DT'].max().date()
         
-        # CORRECCIÓN DE SEGURIDAD: Se eliminan las restricciones dinámicas del widget para permitir rangos libres totales
         rango_fechas = st.sidebar.date_input("Filtrar Rango de Fechas", [min_date, max_date])
         
         if isinstance(rango_fechas, list) or isinstance(rango_fechas, tuple):
@@ -324,7 +323,8 @@ if uploaded_file is not None:
                     Llegadas_On_Time=('ESTATUS_LLEGADA', lambda x: (x == 'On Time').sum())
                 ).reset_index()
                 
-                op_stats['% On-Time Salida'] = (op_stats['Salidas_On_Time'] =/ op_stats['Salidas_Evaluadas'] * 100).fillna(0)
+                # REPARACIÓN DE OPERADOR DE ASIGNACIÓN DIVISIÓN CORRECCIÓN SINTAXIS EXPLICITA
+                op_stats['% On-Time Salida'] = (op_stats['Salidas_On_Time'] / op_stats['Salidas_Evaluadas'] * 100).fillna(0)
                 op_stats['% On-Time Llegada'] = (op_stats['Llegadas_On_Time'] / op_stats['Llegadas_Evaluadas'] * 100).fillna(0)
                 op_stats['% On-Time General'] = (op_stats['% On-Time Salida'] + op_stats['% On-Time Llegada']) / 2
                 
