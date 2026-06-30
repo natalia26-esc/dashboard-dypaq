@@ -71,10 +71,10 @@ if uploaded_file is not None:
             df_tmp['DESTINO'] = df_tmp['DESTINO'].str.replace('MERIDA ANDREA', 'MERIDA').str.replace('CDC-MERIDA', 'MERIDA')
             df_tmp['ORIGEN'] = df_tmp['ORIGEN'].str.replace('MERIDA ANDREA', 'MERIDA').str.replace('CDC-MERIDA', 'MERIDA')
         
-        # PROCESAMIENTO COMPLETO DE FECHAS (Día/Mes/Año)
+        # PROCESAMIENTO TOTAL DE FECHAS (Día/Mes/Año)
         df_master['FECHA_DT'] = pd.to_datetime(df_master['FECHA_SISTEMA'], dayfirst=True, errors='coerce')
         
-        # Corrección dinámica de anomalías en la lectura de años por formatos mixtos de Excel
+        # Corrección dinámica de anomalías en la lectura de años por formatos de celdas en Excel
         df_master.loc[df_master['FECHA_DT'].dt.year < 2000, 'FECHA_DT'] += pd.offsets.DateOffset(years=2000)
         df_master.loc[df_master['FECHA_DT'].dt.year > 2100, 'FECHA_DT'] = df_master['FECHA_DT'].apply(lambda x: x.replace(year=2026) if pd.notna(x) else x)
         df_master.loc[df_master['FECHA_DT'].dt.year == 206, 'FECHA_DT'] = df_master['FECHA_DT'].apply(lambda x: x.replace(year=2026) if pd.notna(x) else x)
@@ -95,6 +95,7 @@ if uploaded_file is not None:
         df_master['Mes_Num'] = df_master['FECHA_DT'].dt.month
         df_master['Mes'] = df_master['FECHA_DT'].dt.strftime('%B').map(meses_espanol)
         
+        # CORRECCIÓN DE LA LLAVE DE CRUCE: Sincronización exacta con guion bajo (_)
         df_master['RUTA_KEY'] = df_master['ORIGEN'].str.replace(" ", "") + "_" + df_master['DESTINO'].str.replace(" ", "")
         df_horarios['RUTA_KEY'] = df_horarios['ORIGEN'].str.replace(" ", "") + "_" + df_horarios['DESTINO'].str.replace(" ", "")
         
@@ -323,7 +324,6 @@ if uploaded_file is not None:
                     Llegadas_On_Time=('ESTATUS_LLEGADA', lambda x: (x == 'On Time').sum())
                 ).reset_index()
                 
-                # REPARACIÓN DE OPERADOR DE ASIGNACIÓN DIVISIÓN CORRECCIÓN SINTAXIS EXPLICITA
                 op_stats['% On-Time Salida'] = (op_stats['Salidas_On_Time'] / op_stats['Salidas_Evaluadas'] * 100).fillna(0)
                 op_stats['% On-Time Llegada'] = (op_stats['Llegadas_On_Time'] / op_stats['Llegadas_Evaluadas'] * 100).fillna(0)
                 op_stats['% On-Time General'] = (op_stats['% On-Time Salida'] + op_stats['% On-Time Llegada']) / 2
