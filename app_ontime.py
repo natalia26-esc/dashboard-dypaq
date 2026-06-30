@@ -236,7 +236,6 @@ if uploaded_file is not None:
             with col_pl2:
                 st.markdown("**Detalle de Cumplimiento por Destinos del Origen**")
                 if len(df_sal_v) > 0:
-                    # CORRECCIÓN EXPLÍCITA PARA EVITAR LENGTH MISMATCH EN ASIGNACIÓN
                     df_destinos_perf = df_sal_v.groupby(['ORIGEN', 'DESTINO']).agg(
                         Total_Viajes=('FOLIO', 'count'),
                         Salidas_A_Tiempo=('ESTATUS_SALIDA', lambda x: (x == 'On Time').sum())
@@ -292,15 +291,20 @@ if uploaded_file is not None:
             if len(df_dem_sal) > 0:
                 df_dem_sal['Fecha_Corta'] = df_dem_sal['FECHA_DT'].dt.strftime('%Y-%m-%d')
                 
+                # CORRECCIÓN DEFINITIVA DE SEGURIDAD CONTRA EL LENGTH MISMATCH
                 df_frec_fechas = df_dem_sal.groupby(['ORIGEN', 'DESTINO', 'Fecha_Corta', 'Día de la Semana']).agg(
                     Viajes_Demorados=('FOLIO', 'count'),
                     Retraso_Promedio=('MINUTOS_DIF_SALIDA', 'mean')
-                ).reset_index().sort_values(by=['ORIGEN', 'DESTINO', 'Fecha_Corta'])
+                ).reset_index()
                 
-                df_frec_fechas['Retraso Promedio'] = df_frec_fechas['Retraso_Promedio'].apply(formatear_minutos_a_string)
-                df_frec_fechas.columns = ['Origen', 'Destino', 'Fecha del Retraso', 'Día de la Semana', 'Viajes Demorados', 'Retraso Promedio']
+                df_frec_fechas['Retraso_Promedio'] = df_frec_fechas['Retraso_Promedio'].apply(formatear_minutos_a_string)
                 
-                st.dataframe(df_frec_fechas, use_container_width=True, hide_index=True)
+                # Mapeo y selección explícita y segura por nombre
+                df_reporte_frecuencias = df_frec_fechas[['ORIGEN', 'DESTINO', 'Fecha_Corta', 'Día de la Semana', 'Viajes_Demorados', 'Retraso_Promedio']].copy()
+                df_reporte_frecuencias.columns = ['Origen', 'Destino', 'Fecha del Retraso', 'Día de la Semana', 'Viajes Demorados', 'Retraso Promedio']
+                df_reporte_frecuencias = df_reporte_frecuencias.sort_values(by='Fecha del Retraso')
+                
+                st.dataframe(df_reporte_frecuencias, use_container_width=True, hide_index=True)
             else:
                 st.info("No hay datos de retrasos en salidas disponibles para desglosar por fecha.")
 
