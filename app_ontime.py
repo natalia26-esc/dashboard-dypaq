@@ -106,7 +106,7 @@ if uploaded_file is not None:
             except:
                 return None
 
-        # NUEVA LÓGICA DE NEGOCIO: Tolerancias asimétricas (Adelantos permitidos -> On Time)
+        # Lógica de Negocio: Tolerancias asimétricas (Adelantos permitidos -> On Time)
         def evaluar_tiempo_absoluto(h_real, h_teorica):
             t_real = parse_horario_flexible(h_real)
             t_teo = parse_horario_flexible(h_teorica)
@@ -117,11 +117,9 @@ if uploaded_file is not None:
             min_teo = t_teo.hour * 60 + t_teo.minute
             dif = min_real - min_teo
             
-            # Ajuste de cambio de día en formato 24 horas
             if dif < -720: dif += 1440
             if dif > 720: dif -= 1440
             
-            # Si se pasa de los 30 minutos de retraso, es demorado. Todo lo demás (a la hora o antes) es On Time.
             if dif > 30: 
                 return dif, "Demorado"
             else: 
@@ -177,8 +175,8 @@ if uploaded_file is not None:
         total_on_time_conjunto = tot_sal_ok + tot_lleg_ok
         pct_conjunto = (total_on_time_conjunto / total_eventos_validos * 100) if total_eventos_validos > 0 else 0
         
-        k1.metric("On-Time Despacho (Salidas)", f"{pct_sal:.1f}%", f"{tot_sal_ok} de {len(df_sal_v)} a tiempo (Colchón 30m)")
-        k2.metric("On-Time Cumplimiento (Llegadas)", f"{pct_lleg:.1f}%", f"{tot_lleg_ok} de {len(df_lleg_v)} a tiempo (Colchón 30m)")
+        k1.metric("On-Time Despacho (Salidas)", f"{pct_sal:.1f}%", f"{tot_sal_ok} de {len(df_sal_v)} a tiempo (Tolerancia 30m)")
+        k2.metric("On-Time Cumplimiento (Llegadas)", f"{pct_lleg:.1f}%", f"{tot_lleg_ok} de {len(df_lleg_v)} a tiempo (Tolerancia 30m)")
         k3.metric("🎯 On-Time General de la Red", f"{pct_conjunto:.1f}%", "Eficiencia integrada (Salidas + Llegadas)")
         
         st.write("") 
@@ -234,14 +232,20 @@ if uploaded_file is not None:
                     fig_bar_p = px.bar(plaza_perf, x='ORIGEN', y='% On-Time Salida', color='% On-Time Salida', color_continuous_scale='RdYlGn', text='% On-Time Salida')
                     fig_bar_p.update_traces(texttemplate='%{text:.1f}%', textposition='outside')
                     st.plotly_chart(fig_bar_p, use_container_width=True)
+                    
             with col_pl2:
                 st.markdown("**Detalle de Cumplimiento por Destinos del Origen**")
-                df_destinos_perf = df_sal_v.groupby(['ORIGEN', 'DESTINO']).agg(
-                    Total_Viajes=('FOLIO', 'count'),
-                    Salidas_A_Tiempo=('ESTATUS_SALIDA', lambda x: (x == 'On Time').sum())
-                ).reset_index()
-                df_destinos_perf['% Eficiencia'] = (df_destinos_perf['Salidas_A_Tiempo'] / df_destinos_perf['Total_Viajes'] * 100).round(1)
-                st.dataframe(df_destinos_perf[['ORIGEN', 'DESTINO', 'Total_Viajes', '% Eficiencia']].sort_values(by='% Eficiencia', ascending=False), use_container_width=True, hide_index=True)
+                if len(df_sal_v) > 0:
+                    # CORRECCIÓN DE LA CORRESPONDENCIA DE COLUMNAS PARA EVITAR LENGTH MISMATCH
+                    df_destinos_perf = df_sal_v.groupby(['ORIGEN', 'DESTINO']).agg(
+                        Total_Viajes=('FOLIO', 'count'),
+                        Salidas_A_Tiempo=('ESTATUS_SALIDA', lambda x: (x == 'On Time').sum())
+                    ).reset_index()
+                    
+                    df_destinos_perf['% Eficiencia'] = (df_destinos_perf['Salidas_A_Tiempo'] / df_destinos_perf['Total_Viajes'] * 100).round(1)
+                    df_reporte_destinos = df_destinos_perf[['ORIGEN', 'DESTINO', 'Total_Viajes', '% Eficiencia']].sort_values(by='% Eficiencia', ascending=False)
+                    
+                    st.dataframe(df_reporte_destinos, use_container_width=True, hide_index=True)
 
         with tab_rutas:
             st.subheader("Tramos con Mayor Desviación en Horas y Minutos")
@@ -283,7 +287,6 @@ if uploaded_file is not None:
                 else:
                     st.success("Sin demoras fuera de la tolerancia de 30 min en arribos.")
             
-            # REQUISITO OPTIMIZADO: Análisis de frecuencias incluyendo Fecha Calendario completa + Día de la Semana
             st.markdown("---")
             st.markdown("### 📅 Análisis de Frecuencia y Fechas: ¿Cuándo fallan las Salidas Críticas?")
             if len(df_dem_sal) > 0:
