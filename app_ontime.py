@@ -1,10 +1,10 @@
-Tienes toda la razón, te pido una disculpa. No debía remover la estructura completa de pestañas y filtros que ya tenías funcionando.He restaurado el diseño original completo con todas sus pestañas integradas (🌐 Análisis por Periodo y Día, 🚨 Análisis de Rutas Críticas, 👤 Confiabilidad de Operadores, 💬 Bitácora de Incidencias) y he implementado estrictamente las correcciones que solicitaste:🛠️ Correcciones Exactas Aplicadas:Corrección de Años de Captura: Se fuerza la corrección automática a $2026$ para cualquier registro donde por error de dedo hayan puesto $2025$ o años anteriores a $2000$.Filtros en Cascada y Dinámicos:Mes: Opción de seleccionar un mes en específico o "Todos".Rango de Fechas Exacto: Totalmente funcional y sin romper la app.Origen: Cualquier plaza o todas.Destino Dinámico (En Cascada): Al seleccionar un Origen (ej. VILLAHERMOSA), la lista de Destinos se actualiza en tiempo real mostrando únicamente los destinos reales capturados desde ese origen.Regla de Tolerancia Actualizada: Se aplica el parámetro estricto de 15 minutos de tolerancia para considerar On Time tanto en salidas como en llegadas.Resumen de Eficiencia Dual: En la primera pestaña se muestra la apertura comparativa de % On Time de Salidas y Llegadas.Auditoría Detallada (Drill-Down): Se conserva el selector bajo las métricas principales para consultar el desglose exacto (Origen, Destino, Fecha, Operador, Folio, Retraso y Comentarios).💻 Código Restaurado y Corregido (app_ontime.py)Pythonimport streamlit as st
+import streamlit as st
 import pandas as pd
 import plotly.express as px
 import datetime
 
 # ---------------------------------------------------------
-# 1. FUNCIÓN GLOBAL DE FORMATO DE TIEMPO Y TEXTO
+# 1. FUNCIONES AUXILIARES
 # ---------------------------------------------------------
 def formatear_minutos_a_string(minutos_totales):
     if pd.isna(minutos_totales) or minutos_totales <= 0:
@@ -31,7 +31,7 @@ def normalizar_texto(texto):
     return txt
 
 # ---------------------------------------------------------
-# CONFIGURACIÓN DE PÁGINA STREAMLIT
+# CONFIGURACIÓN DE PÁGINA
 # ---------------------------------------------------------
 st.set_page_config(
     page_title="Torre de Control DYPAQ - Circuitos",
@@ -49,18 +49,21 @@ if uploaded_file is not None:
     try:
         excel_obj = pd.ExcelFile(uploaded_file)
         
-        # 1. HORARIOS ESTABLECIDOS
+        # 1. LECTURA Y NORMALIZACIÓN DE HORARIOS ESTABLECIDOS
         df_horarios = pd.read_excel(uploaded_file, sheet_name='HORARIOS ESTABLECIDOS')
         df_horarios.columns = df_horarios.columns.astype(str).str.strip().str.upper()
+        
+        col_h_sal = [c for c in df_horarios.columns if 'SALIDA' in c][0]
+        col_h_lleg = [c for c in df_horarios.columns if 'LLEGADA' in c or 'FINAL' in c][0]
         
         df_horarios['ORIGEN'] = df_horarios['ORIGEN'].apply(normalizar_texto)
         df_horarios['DESTINO'] = df_horarios['DESTINO'].apply(normalizar_texto)
         df_horarios['RUTA_KEY'] = df_horarios['ORIGEN'].str.replace(" ", "") + "_" + df_horarios['DESTINO'].str.replace(" ", "")
         
-        df_horarios_clean = df_horarios.drop_duplicates(subset=['RUTA_KEY'])[['RUTA_KEY', 'HORA SALIDA', 'HORA LLEGADA DESTINO FINAL']].copy()
+        df_horarios_clean = df_horarios.drop_duplicates(subset=['RUTA_KEY'])[['RUTA_KEY', col_h_sal, col_h_lleg]].copy()
         df_horarios_clean.columns = ['RUTA_KEY', 'TEORICA_SALIDA', 'TEORICA_LLEGADA']
 
-        # 2. CONSOLIDACIÓN DE PLAZAS
+        # 2. CONSOLIDACIÓN DE HOJAS DE PLAZAS
         hojas_excluidas = ['HORARIOS ESTABLECIDOS', 'COMENTARIOS', 'NOTAS', 'SHEET1', 'DASHBOARD', 'PORTADA']
         hojas_plazas = [h for h in excel_obj.sheet_names if h.upper() not in hojas_excluidas]
         
@@ -98,17 +101,21 @@ if uploaded_file is not None:
         for col in ['ORIGEN', 'DESTINO']:
             df_master[col] = df_master[col].apply(normalizar_texto)
 
-        # TRATAMIENTO Y CORRECCIÓN DE FECHAS (AÑO 2026)
+        # PARSEO DE FECHAS SEGURO (CORRECCIÓN AÑO 2026 SIN ERRORES DE REEMPLAZO)
         df_master['FECHA_DT'] = pd.to_datetime(df_master['FECHA_SISTEMA'], errors='coerce')
         filas_na = df_master['FECHA_DT'].isna()
         if filas_na.any():
             df_master.loc[filas_na, 'FECHA_DT'] = pd.to_datetime(df_master.loc[filas_na, 'FECHA_SISTEMA'], dayfirst=True, errors='coerce')
         
-        # Corrección de captura de años incorrectos (forzado a 2026)
         df_master = df_master.dropna(subset=['FECHA_DT'])
-        df_master['FECHA_DT'] = df_master['FECHA_DT'].apply(lambda d: d.replace(year=2026))
+        
+        # Ajuste de fechas truncadas a año 2026
+        df_master.loc[df_master['FECHA_DT'].dt.year < 2000, 'FECHA_DT'] += pd.offsets.DateOffset(years=2000)
+        df_master.loc[df_master['FECHA_DT'].dt.year != 2026, 'FECHA_DT'] = df_master['FECHA_DT'].apply(
+            lambda d: pd.Timestamp(year=2026, month=d.month, day=d.day) if not (d.month == 2 and d.day == 29) else pd.Timestamp(year=2026, month=2, day=28)
+        )
 
-        # Extracción de tiempo
+        # Días y Meses en español
         dias_espanol = {0: 'Lunes', 1: 'Martes', 2: 'Miércoles', 3: 'Jueves', 4: 'Viernes', 5: 'Sábado', 6: 'Domingo'}
         df_master['Dia_Semana_Num'] = df_master['FECHA_DT'].dt.dayofweek
         df_master['Día de la Semana'] = df_master['Dia_Semana_Num'].map(dias_espanol)
@@ -124,7 +131,7 @@ if uploaded_file is not None:
         df_master['RUTA_KEY'] = df_master['ORIGEN'].str.replace(" ", "") + "_" + df_master['DESTINO'].str.replace(" ", "")
         df_unificado = pd.merge(df_master, df_horarios_clean, on='RUTA_KEY', how='left')
 
-        # EVALUADOR CON TOLERANCIA DE 15 MINUTOS
+        # EVALUACIÓN DE TIEMPO (TOLERANCIA EXACTA: 15 MINUTOS)
         def parse_horario_flexible(h_val):
             if pd.isna(h_val) or str(h_val).strip() == "" or str(h_val).lower() in ["nan", "none", "pendiente"]:
                 return None
@@ -149,6 +156,7 @@ if uploaded_file is not None:
             if dif < -720: dif += 1440
             if dif > 720: dif -= 1440
             
+            # Regla de tolerancia: <= 15 minutos de retraso se considera On Time
             if dif > 15: return dif, "Demorado"
             else: return dif, "On Time"
 
@@ -161,20 +169,17 @@ if uploaded_file is not None:
         df_unificado['ESTATUS_LLEGADA'] = [x[1] for x in res_llegada]
 
         # ---------------------------------------------------------
-        # FILTROS SIDEBAR (FILTRADO EN CASCADA REAL)
+        # FILTROS LATERALES
         # ---------------------------------------------------------
         st.sidebar.header("🕹️ Filtros de Control")
         
-        # 1. Filtro por Mes
+        # Filtro por Mes
         meses_disponibles = ['Todos'] + [meses_espanol[m] for m in sorted(df_unificado['Mes_Num'].unique())]
         mes_sel = st.sidebar.selectbox("Filtrar por Mes", meses_disponibles)
         
-        if mes_sel != 'Todos':
-            df_f_mes = df_unificado[df_unificado['Mes'] == mes_sel]
-        else:
-            df_f_mes = df_unificado.copy()
+        df_f_mes = df_unificado[df_unificado['Mes'] == mes_sel] if mes_sel != 'Todos' else df_unificado.copy()
 
-        # 2. Filtro por Rango de Fechas
+        # Filtro por Rango de Fechas
         min_date = df_f_mes['FECHA_DT'].min().date()
         max_date = df_f_mes['FECHA_DT'].max().date()
         
@@ -187,13 +192,13 @@ if uploaded_file is not None:
         else:
             df_f_fecha = df_f_mes.copy()
 
-        # 3. Filtro por Plaza Origen
+        # Filtro por Plaza Origen
         origen_disp = sorted(df_f_fecha['ORIGEN'].unique().tolist())
         origen_sel = st.sidebar.multiselect("Plaza Origen", origen_disp, default=origen_disp)
         
         df_f_origen = df_f_fecha[df_f_fecha['ORIGEN'].isin(origen_sel)]
         
-        # 4. Filtro por Plaza Destino (En Cascada: solo muestra destinos reales del origen seleccionado)
+        # Filtro por Plaza Destino (Filtrado dinámico según Origen seleccionado)
         destino_disp = sorted(df_f_origen['DESTINO'].unique().tolist())
         destino_sel = st.sidebar.multiselect("Plaza Destino", destino_disp, default=destino_disp)
         
@@ -273,7 +278,7 @@ if uploaded_file is not None:
         st.markdown("---")
         
         # ---------------------------------------------------------
-        # PESTAÑAS
+        # PESTAÑAS PRINCIPALES
         # ---------------------------------------------------------
         tab_volumen, tab_rutas, tab_operadores, tab_incidencias = st.tabs([
             "🌐 Análisis por Periodo y Día", "🚨 Análisis de Rutas Críticas", "👤 Confiabilidad de Operadores", "💬 Bitácora de Incidencias"
@@ -302,7 +307,6 @@ if uploaded_file is not None:
             st.markdown("---")
             st.markdown("### Apertura de Eficiencia (Salidas vs Llegadas) por CEDIS Origen y Destinos")
             
-            # Apertura Dual Salidas / Llegadas
             df_perf_origen = df_filtrado.groupby('ORIGEN').agg(
                 Total_Salidas=('ESTATUS_SALIDA', lambda x: x.isin(['On Time', 'Demorado']).sum()),
                 Salidas_OnTime=('ESTATUS_SALIDA', lambda x: (x == 'On Time').sum()),
@@ -333,7 +337,6 @@ if uploaded_file is not None:
             fig_bar_p.update_traces(texttemplate='%{text:.1f}%', textposition='outside')
             st.plotly_chart(fig_bar_p, use_container_width=True)
 
-            # Tabla de detalle
             df_destinos_perf = df_filtrado.groupby(['ORIGEN', 'DESTINO']).agg(
                 Total_Viajes=('FOLIO', 'count'),
                 Salidas_OnTime=('ESTATUS_SALIDA', lambda x: (x == 'On Time').sum()),
