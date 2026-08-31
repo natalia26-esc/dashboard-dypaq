@@ -55,24 +55,8 @@ def normalizar_texto(texto):
   if pd.isna(texto):
     return ""
   txt = str(texto).upper().strip()
-  replacements = (
-      ("Á", "A"),
-      ("É", "E"),
-      ("Í", "I"),
-      ("Ó", "O"),
-      ("Ú", "U"),
-      ("MERIDA ANDREA", "MERIDA"),
-      ("CDC-MERIDA", "MERIDA"),
-      ("VHS", "VILLAHERMOSA"),
-      ("VSA", "VILLAHERMOSA"),
-      ("VJS", "VILLAHERMOSA"),
-      ("VIH", "VILLAHERMOSA"),
-      ("TLC", "TOLUCA"),
-      ("VER", "VERACRUZ"),
-      ("CUN", "CANCUN"),
-      ("TX", "TUXTLA"),
-      ("TUXTLA GUTIERREZ", "TUXTLA"),
-  )
+  # Limpieza de acentos básicos sin alterar nombres de plazas
+  replacements = (("Á", "A"), ("É", "E"), ("Í", "I"), ("Ó", "O"), ("Ú", "U"))
   for a, b in replacements:
     txt = txt.replace(a, b)
   return txt
@@ -81,12 +65,12 @@ def normalizar_texto(texto):
 try:
   client_gs = conectar_gsheets()
 
-  # 1. Leer registros de la primera hoja (Sheet1)
+  # 1. Leer registros en línea de la primera hoja (Sheet1)
   sheet_registros = client_gs.sheet1
   data_registros = sheet_registros.get_all_records()
   df_p = pd.DataFrame(data_registros)
 
-  # 2. Leer horarios fijos de la pestaña llamada "HORARIOS"
+  # 2. Leer horarios fijos de la pestaña "HORARIOS" en Google Sheets
   sheet_horarios = client_gs.worksheet("HORARIOS")
   data_horarios = sheet_horarios.get_all_records()
   df_horarios = pd.DataFrame(data_horarios)
@@ -98,7 +82,7 @@ try:
   df_p.columns = df_p.columns.astype(str).str.strip().str.upper()
   df_horarios.columns = df_horarios.columns.astype(str).str.strip().str.upper()
 
-  # Mapeo de registros
+  # Mapeo directo de columnas estandarizadas de la app
   columnas_a_copy = {
       "ORIGEN": df_p["ORIGEN"] if "ORIGEN" in df_p.columns else None,
       "DESTINO": df_p["DESTINO"] if "DESTINO" in df_p.columns else None,
@@ -147,7 +131,7 @@ try:
   for col in ["ORIGEN", "DESTINO"]:
     df_master[col] = df_master[col].apply(normalizar_texto)
 
-  # Parseo de fechas
+  # Parseo seguro de fechas
   df_master["FECHA_DT"] = pd.to_datetime(
       df_master["FECHA_SISTEMA"], errors="coerce"
   )
