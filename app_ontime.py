@@ -41,13 +41,17 @@ df = cargar_datos_dashboard()
 st.title("📊 Dashboard Gerencial - Control de Circuitos")
 
 if df.empty:
-  st.warning("No hay datos registrados en la Google Sheet.")
+  st.warning(
+      "No hay datos registrados en la Google Sheet o la hoja está vacía."
+  )
 else:
+  # Validar que exista la columna oficial NO. ECO
+  col_eco = "NO. ECO" if "NO. ECO" in df.columns else df.columns[1]
+  col_op = "OPERADOR" if "OPERADOR" in df.columns else df.columns[0]
+
   # ----------------------------------------------------
   # PROCESAMIENTO DE FECHAS Y TIEMPOS
   # ----------------------------------------------------
-
-
   def parse_datetime(row, f_col, h_col):
     f = str(row.get(f_col, "")).strip()
     h = str(row.get(h_col, "")).strip()
@@ -98,7 +102,6 @@ else:
   ).dt.total_seconds() / 3600.0
 
 
-  # Función para formatear horas decimales (ej. 4.5 -> 4 hrs 30 min)
   def formatear_horas(val):
     if pd.isna(val) or val < 0:
       return "N/A"
@@ -137,11 +140,15 @@ else:
   else:
     date_range = []
 
-  operadores_list = ["Todos"] + sorted(list(df["OPERADOR"].unique()))
+  operadores_list = ["Todos"] + sorted(
+      [str(x) for x in df[col_op].unique() if x != ""]
+  )
   selected_op = st.sidebar.selectbox("Operador Específico", operadores_list)
 
-  unidades_list = ["Todos"] + sorted(list(df["NO. ECO"].unique()))
-  selected_uni = st.sidebar.selectbox("Unidad (NO. ECO)", unidades_list)
+  unidades_list = ["Todos"] + sorted(
+      [str(x) for x in df[col_eco].unique() if x != ""]
+  )
+  selected_uni = st.sidebar.selectbox("Unidad (No. Eco)", unidades_list)
 
   estatus_list = ["Todos", "En curso", "Cerrado"]
   selected_est = st.sidebar.selectbox("Estatus del Circuito", estatus_list)
@@ -158,10 +165,10 @@ else:
     ]
 
   if selected_op != "Todos":
-    df_filtered = df_filtered[df_filtered["OPERADOR"] == selected_op]
+    df_filtered = df_filtered[df_filtered[col_op] == selected_op]
 
   if selected_uni != "Todos":
-    df_filtered = df_filtered[df_filtered["NO. ECO"] == selected_uni]
+    df_filtered = df_filtered[df_filtered[col_eco] == selected_uni]
 
   if selected_est != "Todos":
     df_filtered = df_filtered[df_filtered["ESTATUS"] == selected_est]
@@ -186,9 +193,9 @@ else:
       "435",
       "538",
   ])
-  unidades_en_transito = df[df["ESTATUS"] == "En curso"]["NO. ECO"].nunique()
+  unidades_en_transito = df[df["ESTATUS"] == "En curso"][col_eco].nunique()
   unidades_con_viaje_activo = set(
-      df[df["ESTATUS"] == "En curso"]["NO. ECO"].unique()
+      df[df["ESTATUS"] == "En curso"][col_eco].unique()
   )
   unidades_sin_circuito = len(
       total_unidades_catalogo - unidades_con_viaje_activo
@@ -215,7 +222,7 @@ else:
   with c1:
     st.markdown("### 🏆 Ranking de Operadores (Circuitos Realizados)")
     if not df_filtered.empty:
-      ranking_op = df_filtered["OPERADOR"].value_counts().reset_index()
+      ranking_op = df_filtered[col_op].value_counts().reset_index()
       ranking_op.columns = ["Operador", "Total Circuitos"]
       st.dataframe(ranking_op, use_container_width=True)
     else:
@@ -239,15 +246,12 @@ else:
       )
       st.dataframe(avg_escala, use_container_width=True)
     else:
-      st.info(
-          "No hay datos de circuitos con enlace y escalas completas para"
-          " mostrar."
-      )
+      st.info("No hay datos de circuitos con enlace y escalas completas.")
 
   st.markdown("### 📈 Servicios por Semana por Unidad")
   if not df_filtered.empty:
     servicios_semana = df_filtered.pivot_table(
-        index="NO. ECO",
+        index=col_eco,
         columns="SEMANA",
         values="ORIGEN",
         aggfunc="count",
