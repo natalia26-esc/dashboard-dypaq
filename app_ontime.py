@@ -141,7 +141,7 @@ else:
   selected_op = st.sidebar.selectbox("Operador Específico", operadores_list)
 
   unidades_list = ["Todos"] + sorted(list(df["NO. ECO"].unique()))
-  selected_uni = st.sidebar.selectbox("Unidad (No. Eco)", unidades_list)
+  selected_uni = st.sidebar.selectbox("Unidad (NO. ECO)", unidades_list)
 
   estatus_list = ["Todos", "En curso", "Cerrado"]
   selected_est = st.sidebar.selectbox("Estatus del Circuito", estatus_list)
