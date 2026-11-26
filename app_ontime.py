@@ -1,11 +1,19 @@
 from datetime import datetime, timedelta
-import pandas as pd
-import streamlit as st
 import gspread
 from google.oauth2.service_account import Credentials
+import pandas as pd
+import plotly.express as px
+import streamlit as st
 
-st.set_page_config(page_title="Dashboard - Control de Circuitos", layout="wide")
+st.set_page_config(
+    page_title="Tablero Ejecutivo - Acuses y Arqueos",
+    page_icon="📊",
+    layout="wide",
+)
 
+# ---------------------------------------------------------
+# CONEXIÓN A GOOGLE SHEETS
+# ---------------------------------------------------------
 scope = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
@@ -20,246 +28,543 @@ def conectar_gsheets():
   return client.open_by_url(st.secrets["sheet_url"])
 
 
+def obtener_tiempo_mexico():
+  ahora = datetime.utcnow() - timedelta(hours=6)
+  return ahora.strftime("%Y-%m-%d %H:%M"), ahora.strftime("%Y-%m-%d")
+
+
 @st.cache_data(ttl=60)
-def cargar_datos_dashboard():
+def leer_hoja_raw(nombre_pestana):
   try:
-    client = conectar_gsheets()
-    sheet = client.sheet1
-    data = sheet.get_all_records()
-    df = pd.DataFrame(data)
-    if df.empty:
+    sh = conectar_gsheets()
+    ws = sh.worksheet(nombre_pestana)
+    valores = ws.get_all_values()
+    if not valores or len(valores) < 2:
       return pd.DataFrame()
-    df.fillna("", inplace=True)
+    headers = [str(h).strip() for h in valores[0]]
+    df = pd.DataFrame(valores[1:], columns=headers)
     return df
   except Exception as e:
-    st.error(f"Error al conectar con Google Sheets: {e}")
+    st.error(f"Error al leer la pestaña '{nombre_pestana}': {e}")
     return pd.DataFrame()
 
 
-df = cargar_datos_dashboard()
+def registrar_historial_si_cambio(df_actual_agrupado, nombre_historial, col_estado):
+  """Compara el corte actual contra el último registro guardado en el historial.
 
-st.title("📊 Dashboard Gerencial - Control de Circuitos")
+  Si los números cambiaron (porque actualizaste la Google Sheet), guarda una
+  nueva foto automáticamente.
+  """
+  if df_actual_agrupado.empty:
+    return leer_hoja_raw(nombre_historial)
 
-if df.empty:
-  st.warning(
-      "No hay datos registrados en la Google Sheet o la hoja está vacía."
+  try:
+    sh = conectar_gsheets()
+    ws = sh.worksheet(nombre_historial)
+    valores = ws.get_all_values()
+
+    ts_actual, fecha_actual = obtener_tiempo_mexico()
+    nuevo_bloque = df_actual_agrupado.copy()
+    nuevo_bloque["CORTE_TS"] = ts_actual
+    nuevo_bloque["FECHA"] = fecha_actual
+    nuevo_bloque["CANTIDAD"] = nuevo_bloque["CANTIDAD"].astype(str)
+
+    if not valores or len(valores) < 2:
+      ws.clear()
+      ws.update([nuevo_bloque.columns.tolist()] + nuevo_bloque.values.tolist())
+      return nuevo_bloque
+
+    df_hist = pd.DataFrame(valores[1:], columns=valores[0])
+    ultimo_corte = df_hist["CORTE_TS"].iloc[-1]
+    df_ultimo = df_hist[df_hist["CORTE_TS"] == ultimo_corte]
+
+    # Verificar si hubo cambio real en los totales por plaza/estado
+    firma_anterior = sorted(
+        zip(
+            df_ultimo["PLAZA"],
+            df_ultimo[col_estado],
+            df_ultimo["CANTIDAD"].astype(str),
+        )
+    )
+    firma_nueva = sorted(
+        zip(
+            nuevo_bloque["PLAZA"],
+            nuevo_bloque[col_estado],
+            nuevo_bloque["CANTIDAD"].astype(str),
+        )
+    )
+
+    if firma_anterior != firma_nueva:
+      ws.append_rows(nuevo_bloque.values.tolist())
+      df_hist = pd.concat([df_hist, nuevo_bloque], ignore_index=True)
+
+    return df_hist
+  except Exception:
+    return pd.DataFrame()
+
+
+# ---------------------------------------------------------
+# PROCESAMIENTO DE ACUSES (Desde pestaña ACUSES)
+# ---------------------------------------------------------
+@st.cache_data(ttl=60)
+def obtener_datos_acuses():
+  df = leer_hoja_raw("ACUSES")
+  if df.empty:
+    return pd.DataFrame()
+
+  cols = list(df.columns)
+  col_folio = "FOLIO_GUIA" if "FOLIO_GUIA" in cols else cols[1]
+  col_cliente = "CLIENTE" if "CLIENTE" in cols else cols[5]
+  col_plaza = "Destino" if "Destino" in cols else cols[14]
+  col_obs = "OBSERVACIONES" if "OBSERVACIONES" in cols else cols[20]
+  col_f_ent = "Fecha Entrega" if "Fecha Entrega" in cols else cols[11]
+
+  estatus_cols = [
+      "LIQUIDAR_RUTA",
+      "ENVIAR_RUTA_LIQ",
+      "RECIBIR_RUTA_LIQ",
+      "ASIGNADO_RETORNO",
+      "MESA_DE_CONTROL",
+      "ENVIADO_AL_CLIENTE",
+      "CONTRARECIBO",
+  ]
+  estatus_cols = [c for c in estatus_cols if c in cols]
+
+  plaza_s = (
+      df[col_plaza]
+      .astype(str)
+      .str.strip()
+      .str.upper()
+      .replace({"": "SIN PLAZA", "NAN": "SIN PLAZA", "--": "SIN PLAZA"})
   )
-else:
-  # Validar que exista la columna oficial NO. ECO
-  col_eco = "NO. ECO" if "NO. ECO" in df.columns else df.columns[1]
-  col_op = "OPERADOR" if "OPERADOR" in df.columns else df.columns[0]
-
-  # ----------------------------------------------------
-  # PROCESAMIENTO DE FECHAS Y TIEMPOS
-  # ----------------------------------------------------
-  def parse_datetime(row, f_col, h_col):
-    f = str(row.get(f_col, "")).strip()
-    h = str(row.get(h_col, "")).strip()
-    if not f or not h:
-      return pd.NaT
-    try:
-      return pd.to_datetime(
-          f"{f} {h}", format="%d/%m/%Y %H:%M:%S", errors="coerce"
-      )
-    except:
-      try:
-        return pd.to_datetime(f"{f} {h}", errors="coerce")
-      except:
-        return pd.NaT
-
-
-  df["DT_SALIDA_ORIGEN"] = df.apply(
-      lambda r: parse_datetime(r, "FECHA SALIDA ORIGEN", "HORA SALIDA ORIGEN"),
-      axis=1,
-  )
-  df["DT_LLEGADA_DESTINO"] = df.apply(
-      lambda r: parse_datetime(
-          r, "FECHA LLEGADA DESTINO", "HORA LLEGADA DESTINO"
-      ),
-      axis=1,
-  )
-  df["DT_LLEGADA_ESCALA"] = df.apply(
-      lambda r: parse_datetime(
-          r, "FECHA LLEGADA INTERMEDIA", "HORA LLEGADA INTERMEDIA"
-      ),
-      axis=1,
-  )
-  df["DT_SALIDA_ESCALA"] = df.apply(
-      lambda r: parse_datetime(
-          r, "FECHA SALIDA INTERMEDIA", "HORA SALIDA INTERMEDIA"
-      ),
-      axis=1,
+  obs_s = df[col_obs].astype(str).str.strip().str.upper()
+  cliente_s = (
+      df[col_cliente]
+      .astype(str)
+      .str.strip()
+      .str.upper()
+      .replace({"": "SIN CLIENTE", "NAN": "SIN CLIENTE"})
   )
 
-  # Estatus
-  df["ESTATUS"] = df["DT_LLEGADA_DESTINO"].apply(
-      lambda x: "En curso" if pd.isna(x) else "Cerrado"
+  estado_flujo = obs_s.apply(
+      lambda x: "Terminado" if "CONTRARECIBO" in x else "Pendiente"
+  )
+  hoy = pd.to_datetime((datetime.utcnow() - timedelta(hours=6)).date())
+
+  fechas_pasos = {
+      c: pd.to_datetime(df[c], errors="coerce", dayfirst=True)
+      for c in estatus_cols
+  }
+  f_entrega_s = pd.to_datetime(df[col_f_ent], errors="coerce")
+
+  estatus_actual_list = []
+  area_resp_list = []
+  dias_atraso_list = []
+
+  for idx in range(len(df)):
+    if estado_flujo.iloc[idx] == "Terminado":
+      estatus_actual_list.append("CONTRARECIBO")
+      area_resp_list.append("MESA DE CONTROL")
+      dias_atraso_list.append(0)
+      continue
+
+    ultimo_idx = -1
+    ultima_fecha = pd.NaT
+    for p_idx, c in enumerate(estatus_cols):
+      val_f = fechas_pasos[c].iloc[idx]
+      if not pd.isna(val_f):
+        ultimo_idx = p_idx
+        ultima_fecha = val_f
+
+    paso_pend_idx = min(ultimo_idx + 1, len(estatus_cols) - 1)
+    nombre_paso = estatus_cols[paso_pend_idx] if estatus_cols else "SIN ESTATUS"
+
+    if paso_pend_idx in [0, 1]:
+      area = "OPERACIONES"
+    elif paso_pend_idx in [2, 3]:
+      area = "ADMINISTRACIÓN"
+    else:
+      area = "MESA DE CONTROL"
+
+    ref_fecha = (
+        ultima_fecha if not pd.isna(ultima_fecha) else f_entrega_s.iloc[idx]
+    )
+    atraso = (
+        max(0, int((hoy - ref_fecha.normalize()).days))
+        if not pd.isna(ref_fecha)
+        else 0
+    )
+
+    estatus_actual_list.append(nombre_paso)
+    area_resp_list.append(area)
+    dias_atraso_list.append(atraso)
+
+  return pd.DataFrame({
+      "FOLIO_GUIA": df[col_folio].astype(str),
+      "PLAZA": plaza_s,
+      "CLIENTE": cliente_s,
+      "OBSERVACIONES": obs_s,
+      "ESTADO_FLUJO": estado_flujo,
+      "ESTATUS_ACTUAL": estatus_actual_list,
+      "AREA_RESPONSABLE": area_resp_list,
+      "DIAS_ATRASO": dias_atraso_list,
+  })
+
+
+# ---------------------------------------------------------
+# PROCESAMIENTO DE ARQUEOS (Desde pestaña ARQUEOS)
+# ---------------------------------------------------------
+@st.cache_data(ttl=60)
+def obtener_datos_arqueos():
+  df = leer_hoja_raw("ARQUEOS")
+  if df.empty:
+    return pd.DataFrame()
+
+  cols = list(df.columns)
+  col_cip = "CIP" if "CIP" in cols else cols[0]
+  col_guia = "Guia" if "Guia" in cols else cols[1]
+  col_mov = "Movimiento" if "Movimiento" in cols else cols[3]
+  col_plaza = "D_Plaza" if "D_Plaza" in cols else cols[5]
+  col_dias_sm = "Dias Sin Mov" if "Dias Sin Mov" in cols else cols[6]
+  col_dias_at = "Dias Atraso" if "Dias Atraso" in cols else cols[11]
+  col_cliente = "D_Cliente" if "D_Cliente" in cols else cols[21]
+  col_ead = "EAD" if "EAD" in cols else cols[25]
+  col_tipo_ent = "Tipo Entrega" if "Tipo Entrega" in cols else cols[33]
+  col_inc = "Incidencia" if "Incidencia" in cols else cols[35]
+
+  df_out = pd.DataFrame()
+  df_out["CIP"] = df[col_cip].astype(str).str.strip()
+  df_out["GUIA"] = df[col_guia].astype(str).str.strip()
+  df_out["PLAZA"] = (
+      df[col_plaza]
+      .astype(str)
+      .str.strip()
+      .str.upper()
+      .replace({"": "SIN PLAZA", "NAN": "SIN PLAZA"})
+  )
+  df_out["MOVIMIENTO"] = (
+      df[col_mov]
+      .astype(str)
+      .str.strip()
+      .str.upper()
+      .replace({"": "SIN MOVIMIENTO", "NAN": "SIN MOVIMIENTO"})
+  )
+  df_out["CLIENTE"] = df[col_cliente].astype(str).str.strip().str.upper()
+
+  def map_tipo_guia(row):
+    te = str(row[col_tipo_ent]).strip().upper()
+    ead_flag = str(row[col_ead]).strip().upper()
+    if "OCU" in te or ead_flag == "NO SELECCIONADO":
+      return "OCU"
+    return "EAD"
+
+  df_out["TIPO_GUIA"] = df.apply(map_tipo_guia, axis=1)
+
+  def map_incidencia(val):
+    v = str(val).strip()
+    if v == "" or v.lower() in ["nan", "none", "null", "--"]:
+      return "Sin Incidencia"
+    return "Con Incidencia"
+
+  df_out["TIENE_INCIDENCIA"] = df[col_inc].apply(map_incidencia)
+  df_out["DETALLE_INCIDENCIA"] = (
+      df[col_inc].fillna("").astype(str).str.strip()
   )
 
-  # Tiempos de recorrido (Horas decimales)
-  df["TIEMPO_RECORRIDO_HRS"] = (
-      df["DT_LLEGADA_DESTINO"] - df["DT_SALIDA_ORIGEN"]
-  ).dt.total_seconds() / 3600.0
-
-
-  def formatear_horas(val):
-    if pd.isna(val) or val < 0:
-      return "N/A"
-    hrs = int(val)
-    mins = int(round((val - hrs) * 60))
-    if mins == 0:
-      return f"{hrs} hrs"
-    return f"{hrs} hrs {mins} min"
-
-
-  df["TIEMPO_RECORRIDO_STR"] = df["TIEMPO_RECORRIDO_HRS"].apply(
-      formatear_horas
+  df_out["DIAS_SIN_MOV"] = (
+      pd.to_numeric(df[col_dias_sm], errors="coerce")
+      .fillna(0)
+      .clip(lower=0)
+      .astype(int)
   )
+  raw_atraso = pd.to_numeric(df[col_dias_at], errors="coerce").fillna(0)
 
-  # Tiempos de escala / descarga
-  df["TIEMPO_ESCALA_HRS"] = (
-      df["DT_SALIDA_ESCALA"] - df["DT_LLEGADA_ESCALA"]
-  ).dt.total_seconds() / 3600.0
-  df["TIEMPO_ESCALA_STR"] = df["TIEMPO_ESCALA_HRS"].apply(formatear_horas)
+  df_out["CONDICION"] = raw_atraso.apply(
+      lambda x: "Vencida" if x > 0 else "Vigente"
+  )
+  df_out["DIAS_ATRASO"] = raw_atraso.clip(lower=0).astype(int)
 
-  # Semana del año
-  df["SEMANA"] = df["DT_SALIDA_ORIGEN"].dt.strftime("%Y-W%U")
+  return df_out
 
-  # ----------------------------------------------------
-  # FILTROS INTELIGENTES (Sidebar)
-  # ----------------------------------------------------
-  st.sidebar.header("🔍 Filtros Inteligentes")
 
-  valid_dates = df["DT_SALIDA_ORIGEN"].dropna()
-  if not valid_dates.empty:
-    min_date = valid_dates.min().date()
-    max_date = valid_dates.max().date()
-    date_range = st.sidebar.date_input(
-        "Rango de Fechas (Salida)", [min_date, max_date]
+# ---------------------------------------------------------
+# INTERFAZ EJECUTIVA PARA DIRECTIVOS
+# ---------------------------------------------------------
+col_t1, col_t2 = st.columns([5, 1])
+col_t1.title("📊 Tablero Ejecutivo - Acuses y Arqueos")
+if col_t2.button("🔄 Actualizar Datos", use_container_width=True):
+  st.cache_data.clear()
+  st.rerun()
+
+tab_acuses, tab_arqueos = st.tabs(
+    ["📄 Control y Flujo de Acuses", "📦 Arqueos y Carga en Plaza"]
+)
+
+# =========================================================
+# PESTAÑA 1: ACUSES
+# =========================================================
+with tab_acuses:
+  df_ac = obtener_datos_acuses()
+
+  if df_ac.empty:
+    st.warning(
+        "La pestaña 'ACUSES' en Google Sheets está vacía. Pega ahí los datos de"
+        " tu reporte para comenzar."
     )
   else:
-    date_range = []
-
-  operadores_list = ["Todos"] + sorted(
-      [str(x) for x in df[col_op].unique() if x != ""]
-  )
-  selected_op = st.sidebar.selectbox("Operador Específico", operadores_list)
-
-  unidades_list = ["Todos"] + sorted(
-      [str(x) for x in df[col_eco].unique() if x != ""]
-  )
-  selected_uni = st.sidebar.selectbox("Unidad (No. Eco)", unidades_list)
-
-  estatus_list = ["Todos", "En curso", "Cerrado"]
-  selected_est = st.sidebar.selectbox("Estatus del Circuito", estatus_list)
-
-  # Aplicar Filtros
-  df_filtered = df.copy()
-  if len(date_range) == 2:
-    start_d, end_d = pd.to_datetime(date_range[0]), pd.to_datetime(
-        date_range[1]
-    ) + pd.Timedelta(days=1)
-    df_filtered = df_filtered[
-        (df_filtered["DT_SALIDA_ORIGEN"] >= start_d)
-        & (df_filtered["DT_SALIDA_ORIGEN"] < end_d)
-    ]
-
-  if selected_op != "Todos":
-    df_filtered = df_filtered[df_filtered[col_op] == selected_op]
-
-  if selected_uni != "Todos":
-    df_filtered = df_filtered[df_filtered[col_eco] == selected_uni]
-
-  if selected_est != "Todos":
-    df_filtered = df_filtered[df_filtered["ESTATUS"] == selected_est]
-
-  # ----------------------------------------------------
-  # KPIs PRINCIPALES
-  # ----------------------------------------------------
-  st.subheader("📌 Indicadores Clave (KPIs)")
-
-  total_unidades_catalogo = set([
-      "388",
-      "471",
-      "472",
-      "503",
-      "540",
-      "543",
-      "470",
-      "530",
-      "539",
-      "508",
-      "412",
-      "435",
-      "538",
-  ])
-  unidades_en_transito = df[df["ESTATUS"] == "En curso"][col_eco].nunique()
-  unidades_con_viaje_activo = set(
-      df[df["ESTATUS"] == "En curso"][col_eco].unique()
-  )
-  unidades_sin_circuito = len(
-      total_unidades_catalogo - unidades_con_viaje_activo
-  )
-
-  col1, col2, col3, col4 = st.columns(4)
-  col1.metric("🚚 Unidades en Tránsito", unidades_en_transito)
-  col2.metric("🟢 Unidades Libres / Sin Circuito", unidades_sin_circuito)
-  col3.metric("📦 Circuitos Filtrados", len(df_filtered))
-
-  avg_tiempo_val = df_filtered[df_filtered["TIEMPO_RECORRIDO_HRS"] > 0][
-      "TIEMPO_RECORRIDO_HRS"
-  ].mean()
-  avg_tiempo_str = formatear_horas(avg_tiempo_val)
-  col4.metric("⏱️ Tiempo Promedio Recorrido", avg_tiempo_str)
-
-  st.markdown("---")
-
-  # ----------------------------------------------------
-  # GRÁFICAS Y TABLAS DE DETALLE
-  # ----------------------------------------------------
-  c1, c2 = st.columns(2)
-
-  with c1:
-    st.markdown("### 🏆 Ranking de Operadores (Circuitos Realizados)")
-    if not df_filtered.empty:
-      ranking_op = df_filtered[col_op].value_counts().reset_index()
-      ranking_op.columns = ["Operador", "Total Circuitos"]
-      st.dataframe(ranking_op, use_container_width=True)
-    else:
-      st.info("No hay datos para el ranking con los filtros actualizados.")
-
-  with c2:
-    st.markdown("### ⏱️ Tiempos de Descarga / Escala (Promedio)")
-    df_enlace = df_filtered[
-        (df_filtered["TIPO"] == "Enlace")
-        & (df_filtered["TIEMPO_ESCALA_HRS"] > 0)
-    ]
-    if not df_enlace.empty:
-      avg_escala = (
-          df_enlace.groupby("PLAZA INTERMEDIA")["TIEMPO_ESCALA_HRS"]
-          .mean()
-          .reset_index()
-      )
-      avg_escala.columns = ["Plaza Escala", "Promedio en Escala"]
-      avg_escala["Promedio en Escala"] = avg_escala["Promedio en Escala"].apply(
-          formatear_horas
-      )
-      st.dataframe(avg_escala, use_container_width=True)
-    else:
-      st.info("No hay datos de circuitos con enlace y escalas completas.")
-
-  st.markdown("### 📈 Servicios por Semana por Unidad")
-  if not df_filtered.empty:
-    servicios_semana = df_filtered.pivot_table(
-        index=col_eco,
-        columns="SEMANA",
-        values="ORIGEN",
-        aggfunc="count",
-        fill_value=0,
+    # Guardar avance automático en ACUSES_HISTORIAL si hubo cambios en la Google Sheet
+    resumen_hist_ac = (
+        df_ac.groupby(["PLAZA", "ESTADO_FLUJO"])
+        .size()
+        .reset_index(name="CANTIDAD")
     )
-    st.dataframe(servicios_semana, use_container_width=True)
-  else:
-    st.info("No hay datos suficientes.")
+    df_hist_ac = registrar_historial_si_cambio(
+        resumen_hist_ac, "ACUSES_HISTORIAL", "ESTADO_FLUJO"
+    )
 
-  st.markdown("### 📋 Detalle de Circuitos")
-  st.dataframe(df_filtered, use_container_width=True)
+    # Filtros
+    f1, f2, f3 = st.columns(3)
+    sel_plaza_ac = f1.selectbox(
+        "Plaza Responsable:",
+        ["Todas"] + sorted(df_ac["PLAZA"].unique().tolist()),
+        key="p_ac",
+    )
+    sel_estado_ac = f2.selectbox(
+        "Estado del Flujo:",
+        ["Todos", "Pendiente", "Terminado"],
+        key="e_ac",
+    )
+    sel_area_ac = f3.selectbox(
+        "Área Responsable:",
+        ["Todas", "OPERACIONES", "ADMINISTRACIÓN", "MESA DE CONTROL"],
+        key="a_ac",
+    )
+
+    df_ac_f = df_ac.copy()
+    if sel_plaza_ac != "Todas":
+      df_ac_f = df_ac_f[df_ac_f["PLAZA"] == sel_plaza_ac]
+    if sel_estado_ac != "Todos":
+      df_ac_f = df_ac_f[df_ac_f["ESTADO_FLUJO"] == sel_estado_ac]
+    if sel_area_ac != "Todas":
+      df_ac_f = df_ac_f[df_ac_f["AREA_RESPONSABLE"] == sel_area_ac]
+
+    # KPIs
+    total_ac = len(df_ac_f)
+    pend_df = df_ac_f[df_ac_f["ESTADO_FLUJO"] == "Pendiente"]
+    pend_ac = len(pend_df)
+    term_ac = len(df_ac_f[df_ac_f["ESTADO_FLUJO"] == "Terminado"])
+    prom_atraso = pend_df["DIAS_ATRASO"].mean() if pend_ac > 0 else 0
+
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Total Acuses", f"{total_ac:,}")
+    k2.metric(
+        "⏳ Pendientes de Flujo",
+        f"{pend_ac:,}",
+        delta=f"{(pend_ac/total_ac*100):.1f}%" if total_ac else "0%",
+        delta_color="inverse",
+    )
+    k3.metric("✅ Terminados (Contrarecibo)", f"{term_ac:,}")
+    k4.metric("📅 Promedio Días Atraso (Pendientes)", f"{prom_atraso:.1f} días")
+
+    st.markdown("---")
+
+    # Gráficas Fila 1
+    g1, g2 = st.columns(2)
+    with g1:
+      st.subheader("Acuses por Plaza Responsable")
+      grp_plaza = (
+          df_ac_f.groupby(["PLAZA", "ESTADO_FLUJO"])
+          .size()
+          .reset_index(name="Cantidad")
+      )
+      fig_plaza = px.bar(
+          grp_plaza,
+          x="PLAZA",
+          y="Cantidad",
+          color="ESTADO_FLUJO",
+          barmode="stack",
+          color_discrete_map={"Pendiente": "#EF553B", "Terminado": "#00CC96"},
+          text_auto=True,
+      )
+      st.plotly_chart(fig_plaza, use_container_width=True)
+
+    with g2:
+      st.subheader("Responsabilidad por Área y Estatus (Pendientes)")
+      if pend_ac > 0:
+        grp_area = (
+            pend_df.groupby(["AREA_RESPONSABLE", "ESTATUS_ACTUAL"])
+            .size()
+            .reset_index(name="Cantidad")
+        )
+        fig_area = px.bar(
+            grp_area,
+            x="AREA_RESPONSABLE",
+            y="Cantidad",
+            color="ESTATUS_ACTUAL",
+            text_auto=True,
+        )
+        st.plotly_chart(fig_area, use_container_width=True)
+      else:
+        st.success("Sin acuses pendientes en esta selección.")
+
+    # Gráficas Fila 2
+    g3, g4 = st.columns(2)
+    with g3:
+      st.subheader("Principales Clientes y 'Otros'")
+      top_cli = df_ac_f["CLIENTE"].value_counts().head(10).index
+      df_ac_f["CLIENTE_GRUPO"] = df_ac_f["CLIENTE"].apply(
+          lambda x: x if x in top_cli else "OTROS"
+      )
+      grp_cli = df_ac_f["CLIENTE_GRUPO"].value_counts().reset_index()
+      grp_cli.columns = ["Cliente", "Cantidad"]
+      fig_cli = px.pie(grp_cli, names="Cliente", values="Cantidad", hole=0.4)
+      st.plotly_chart(fig_cli, use_container_width=True)
+
+    with g4:
+      st.subheader("📈 Evolución de Pendientes por Plaza")
+      if not df_hist_ac.empty:
+        df_hist_ac["CANTIDAD"] = pd.to_numeric(
+            df_hist_ac["CANTIDAD"], errors="coerce"
+        ).fillna(0)
+        hist_p = df_hist_ac[df_hist_ac["ESTADO_FLUJO"] == "Pendiente"]
+        if sel_plaza_ac != "Todas":
+          hist_p = hist_p[hist_p["PLAZA"] == sel_plaza_ac]
+        fig_ev_ac = px.line(
+            hist_p,
+            x="CORTE_TS",
+            y="CANTIDAD",
+            color="PLAZA",
+            markers=True,
+            labels={"CORTE_TS": "Corte", "CANTIDAD": "Pendientes"},
+        )
+        st.plotly_chart(fig_ev_ac, use_container_width=True)
+
+    with st.expander("📋 Ver Detalle de Acuses Pendientes"):
+      st.dataframe(pend_df, use_container_width=True)
+
+# =========================================================
+# PESTAÑA 2: ARQUEOS
+# =========================================================
+with tab_arqueos:
+  df_ar = obtener_datos_arqueos()
+
+  if df_ar.empty:
+    st.warning(
+        "La pestaña 'ARQUEOS' en Google Sheets está vacía. Pega ahí los datos"
+        " de tu reporte para comenzar."
+    )
+  else:
+    # Guardar avance automático en ARQUEOS_HISTORIAL si hubo cambios en la Google Sheet
+    resumen_hist_ar = (
+        df_ar.groupby(["PLAZA", "CONDICION"]).size().reset_index(name="CANTIDAD")
+    )
+    df_hist_ar = registrar_historial_si_cambio(
+        resumen_hist_ar, "ARQUEOS_HISTORIAL", "CONDICION"
+    )
+
+    # Filtros
+    fa1, fa2, fa3, fa4 = st.columns(4)
+    sel_plaza_ar = fa1.selectbox(
+        "Plaza:",
+        ["Todas"] + sorted(df_ar["PLAZA"].unique().tolist()),
+        key="p_ar",
+    )
+    sel_tipo_guia = fa2.selectbox(
+        "Tipo de Guía:", ["Todos", "EAD", "OCU"], key="t_ar"
+    )
+    sel_inc = fa3.selectbox(
+        "Incidencia:",
+        ["Todas", "Con Incidencia", "Sin Incidencia"],
+        key="i_ar",
+    )
+    sel_cond = fa4.selectbox(
+        "Condición de Carga:", ["Todas", "Vigente", "Vencida"], key="c_ar"
+    )
+
+    df_ar_f = df_ar.copy()
+    if sel_plaza_ar != "Todas":
+      df_ar_f = df_ar_f[df_ar_f["PLAZA"] == sel_plaza_ar]
+    if sel_tipo_guia != "Todos":
+      df_ar_f = df_ar_f[df_ar_f["TIPO_GUIA"] == sel_tipo_guia]
+    if sel_inc != "Todas":
+      df_ar_f = df_ar_f[df_ar_f["TIENE_INCIDENCIA"] == sel_inc]
+    if sel_cond != "Todas":
+      df_ar_f = df_ar_f[df_ar_f["CONDICION"] == sel_cond]
+
+    # KPIs
+    tot_items = len(df_ar_f)
+    vig_items = len(df_ar_f[df_ar_f["CONDICION"] == "Vigente"])
+    ven_items = len(df_ar_f[df_ar_f["CONDICION"] == "Vencida"])
+    prom_sm = df_ar_f["DIAS_SIN_MOV"].mean() if tot_items > 0 else 0
+    prom_at = (
+        df_ar_f[df_ar_f["DIAS_ATRASO"] > 0]["DIAS_ATRASO"].mean()
+        if ven_items > 0
+        else 0
+    )
+
+    ka1, ka2, ka3, ka4, ka5 = st.columns(5)
+    ka1.metric("📦 Carga Total (Ítems)", f"{tot_items:,}")
+    ka2.metric("🟢 Carga Vigente", f"{vig_items:,}")
+    ka3.metric(
+        "🔴 Carga Vencida",
+        f"{ven_items:,}",
+        delta=f"{(ven_items/tot_items*100):.1f}%" if tot_items else "0%",
+        delta_color="inverse",
+    )
+    ka4.metric("🛑 Prom. Días Sin Movimiento", f"{prom_sm:.1f} días")
+    ka5.metric("⏰ Prom. Días de Atraso", f"{prom_at:.1f} días")
+
+    st.markdown("---")
+
+    ga1, ga2 = st.columns(2)
+    with ga1:
+      st.subheader("Carga Vigente vs. Vencida por Plaza")
+      grp_ar_plaza = (
+          df_ar_f.groupby(["PLAZA", "CONDICION"])
+          .size()
+          .reset_index(name="Ítems")
+      )
+      fig_ar_p = px.bar(
+          grp_ar_plaza,
+          x="PLAZA",
+          y="Ítems",
+          color="CONDICION",
+          barmode="group",
+          color_discrete_map={"Vigente": "#00CC96", "Vencida": "#EF553B"},
+          text_auto=True,
+      )
+      st.plotly_chart(fig_ar_p, use_container_width=True)
+
+    with ga2:
+      st.subheader("Movimiento / Estatus Actual en Plaza")
+      grp_mov = df_ar_f["MOVIMIENTO"].value_counts().reset_index()
+      grp_mov.columns = ["Movimiento", "Ítems"]
+      fig_mov = px.bar(
+          grp_mov,
+          x="Ítems",
+          y="Movimiento",
+          orientation="h",
+          text_auto=True,
+      )
+      st.plotly_chart(fig_mov, use_container_width=True)
+
+    st.subheader("📈 Evolución de Carga Vencida por Plaza")
+    if not df_hist_ar.empty:
+      df_hist_ar["CANTIDAD"] = pd.to_numeric(
+          df_hist_ar["CANTIDAD"], errors="coerce"
+      ).fillna(0)
+      hist_v = df_hist_ar[df_hist_ar["CONDICION"] == "Vencida"]
+      if sel_plaza_ar != "Todas":
+        hist_v = hist_v[hist_v["PLAZA"] == sel_plaza_ar]
+      fig_ev_ar = px.line(
+          hist_v,
+          x="CORTE_TS",
+          y="CANTIDAD",
+          color="PLAZA",
+          markers=True,
+          labels={"CORTE_TS": "Corte", "CANTIDAD": "Ítems Vencidos"},
+      )
+      st.plotly_chart(fig_ev_ar, use_container_width=True)
+
+    with st.expander("📋 Ver Tabla Detallada de Arqueos (Ítems)"):
+      st.dataframe(df_ar_f, use_container_width=True)
