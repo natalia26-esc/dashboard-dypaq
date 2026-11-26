@@ -99,7 +99,7 @@ def registrar_historial_si_cambio(
 
 
 # ---------------------------------------------------------
-# MAPEO DE PLAZAS EN ACUSES (BASADO EN COLUMNA P: D_Estado Destino)
+# MAPEO DE PLAZAS EN ACUSES (EXCEPCIONES ESPECÍFICAS + ESTADO P)
 # ---------------------------------------------------------
 PLAZAS_OFICIALES = [
     "CANCUN",
@@ -107,6 +107,7 @@ PLAZAS_OFICIALES = [
     "TUXTLA",
     "TOLUCA",
     "PUEBLA",
+    "GUANAJUATO",
     "VILLAHERMOSA",
     "CIUDAD DEL CARMEN",
     "CAMPECHE",
@@ -114,9 +115,23 @@ PLAZAS_OFICIALES = [
 ]
 
 
-def unificar_plaza_por_estado_p(estado_col_p, destino_col_o):
+def unificar_plaza_acuses(estado_col_p, destino_col_o):
   edo = str(estado_col_p).strip().upper()
   dest = str(destino_col_o).strip().upper()
+
+  if dest == "METEPEC":
+    return "PUEBLA"
+  if dest in ["LEON", "LEÓN", "SILAO", "PUERTO RICO"]:
+    return "GUANAJUATO"
+  if (
+      dest in ["TULTEPEC", "PARQUE INDUSTRIAL TOLUCA 2000"]
+      or "TOLUCA 2000" in dest
+  ):
+    return "TOLUCA"
+  if dest == "PALENQUE":
+    return "VILLAHERMOSA"
+  if dest in ["FELIPE CARRILLO PUERTO", "CHETUMAL"]:
+    return "MERIDA"
 
   if "QUINTANA" in edo:
     return "CANCUN"
@@ -134,7 +149,9 @@ def unificar_plaza_por_estado_p(estado_col_p, destino_col_o):
     return "VERACRUZ"
   if "PUEBLA" in edo or "TLAXCALA" in edo:
     return "PUEBLA"
-  # Estado de México, CDMX, Guanajuato, etc.
+  if "GUANAJUATO" in edo:
+    return "GUANAJUATO"
+
   return "TOLUCA"
 
 
@@ -239,7 +256,7 @@ def obtener_datos_acuses():
     rango_atraso_list.append(rango)
 
   plazas_unificadas = [
-      unificar_plaza_por_estado_p(edo, dest)
+      unificar_plaza_acuses(edo, dest)
       for edo, dest in zip(df_p[col_edo_p], df_p[col_dest_o])
   ]
   clientes_clean = (
@@ -265,7 +282,7 @@ def obtener_datos_acuses():
 
 
 # ---------------------------------------------------------
-# PROCESAMIENTO DE ARQUEOS (PLAZA DESDE COLUMNA F: D_Plaza)
+# PROCESAMIENTO DE ARQUEOS (FILTRO FECHA PROMESA >= 01/01/2025)
 # ---------------------------------------------------------
 @st.cache_data(ttl=60)
 def obtener_datos_arqueos():
@@ -274,12 +291,23 @@ def obtener_datos_arqueos():
     return pd.DataFrame()
 
   cols = list(df.columns)
+  col_cip = "CIP" if "CIP" in cols else cols[0]
+  col_guia = "Guia" if "Guia" in cols else cols[1]
   col_mov = "Movimiento" if "Movimiento" in cols else cols[3]
   col_plaza_f = cols[5] if len(cols) > 5 else "D_Plaza"
+  col_dias_sm = "Dias Sin Mov" if "Dias Sin Mov" in cols else cols[6]
+  col_f_promesa = "Fecha Promesa" if "Fecha Promesa" in cols else cols[9]
   col_dias_at = "Dias Atraso" if "Dias Atraso" in cols else cols[11]
+  col_cliente = "D_Cliente" if "D_Cliente" in cols else cols[21]
   col_ead = "EAD" if "EAD" in cols else cols[25]
   col_tipo_ent = "Tipo Entrega" if "Tipo Entrega" in cols else cols[33]
   col_inc = "Incidencia" if "Incidencia" in cols else cols[35]
+
+  # Excluir registros con Fecha Promesa anterior al 01/01/2025
+  f_prom_s = pd.to_datetime(df[col_f_promesa], errors="coerce", dayfirst=True)
+  df = df[f_prom_s.isna() | (f_prom_s >= pd.Timestamp("2025-01-01"))].copy()
+  if df.empty:
+    return pd.DataFrame()
 
   plaza_map = {
       "UMAN": "MERIDA",
@@ -342,13 +370,25 @@ def obtener_datos_arqueos():
     return "Con Incidencia"
 
   raw_atraso = pd.to_numeric(df[col_dias_at], errors="coerce").fillna(0)
+  dias_sm = (
+      pd.to_numeric(df[col_dias_sm], errors="coerce")
+      .fillna(0)
+      .clip(lower=0)
+      .astype(int)
+  )
 
   return pd.DataFrame({
+      "CIP": df[col_cip].astype(str).str.strip(),
+      "GUIA": df[col_guia].astype(str).str.strip(),
       "PLAZA": plazas_clean,
+      "CLIENTE": df[col_cliente].astype(str).str.strip().str.upper(),
       "MOVIMIENTO": mov_raw,
       "GRUPO_MOVIMIENTO": mov_raw.apply(agrupar_movimiento),
       "TIPO_GUIA": df.apply(map_tipo_guia, axis=1),
       "TIENE_INCIDENCIA": df[col_inc].apply(map_incidencia),
+      "DETALLE_INCIDENCIA": df[col_inc].fillna("").astype(str).str.strip(),
+      "DIAS_SIN_MOV": dias_sm,
+      "DIAS_ATRASO": raw_atraso.clip(lower=0).astype(int),
       "CONDICION": raw_atraso.apply(
           lambda x: "Vencida" if x > 0 else "Vigente"
       ),
@@ -410,7 +450,7 @@ with tab_acuses:
           "Haz clic en el botón de una plaza para abrir su desglose detallado"
           " más abajo."
       )
-      cols = st.columns(3)
+      cols = st.columns(5)
       for idx, plaza in enumerate(PLAZAS_OFICIALES):
         sub_p = df_ac_f[df_ac_f["PLAZA"] == plaza]
         op_val = len(sub_p[sub_p["AREA"] == "OPERACIONES"])
@@ -420,7 +460,7 @@ with tab_acuses:
         r_1_5 = len(sub_p[sub_p["RANGO_ATRASO"] == "1 a 5 días"])
         r_mas_5 = len(sub_p[sub_p["RANGO_ATRASO"] == "Más de 5 días"])
 
-        with cols[idx % 3]:
+        with cols[idx % 5]:
           with st.container(border=True):
             es_sel = st.session_state.plaza_desglose == plaza
             if st.button(
@@ -600,28 +640,135 @@ with tab_arqueos:
 
     st.markdown("---")
 
-    ga1, ga2 = st.columns(2)
-    with ga1:
-      st.subheader("Carga Vigente vs. Vencida por Plaza")
-      grp_ar_plaza = (
-          df_ar_f.groupby(["PLAZA", "CONDICION"])
+    # GRÁFICA PRINCIPAL: POR PLAZA (SI ES "Todas") O POR GRUPO DE MOVIMIENTO (SI HAY PLAZA)
+    orden_grupos = ["Circuitos", "Rutas", "Inventario", "Otros Movimientos"]
+
+    if sel_plaza_ar == "Todas":
+      st.subheader("Movimiento / Estatus Actual por Plaza")
+      st.caption(
+          "💡 Haz clic en cualquier barra o color de una plaza para ver su"
+          " desglose detallado abajo."
+      )
+
+      grp_plaza_mov = (
+          df_ar_f.groupby(["PLAZA", "GRUPO_MOVIMIENTO"])
           .size()
           .reset_index(name="Ítems")
       )
-      fig_ar_p = px.bar(
-          grp_ar_plaza,
+      totales_plaza = (
+          grp_plaza_mov.groupby("PLAZA")["Ítems"]
+          .sum()
+          .reset_index()
+          .sort_values("Ítems", ascending=False)
+      )
+      orden_plazas = totales_plaza["PLAZA"].tolist()
+
+      fig_mov = px.bar(
+          grp_plaza_mov,
           x="PLAZA",
           y="Ítems",
-          color="CONDICION",
-          barmode="group",
-          color_discrete_map={"Vigente": "#00CC96", "Vencida": "#EF553B"},
-          text_auto=True,
+          color="GRUPO_MOVIMIENTO",
+          barmode="stack",
+          category_orders={
+              "PLAZA": orden_plazas,
+              "GRUPO_MOVIMIENTO": orden_grupos,
+          },
+          custom_data=["PLAZA", "GRUPO_MOVIMIENTO"],
+          hover_data={"PLAZA": True, "GRUPO_MOVIMIENTO": True, "Ítems": True},
+          labels={"PLAZA": "Plaza", "GRUPO_MOVIMIENTO": "Tipo de Movimiento"},
       )
-      st.plotly_chart(fig_ar_p, use_container_width=True)
+      fig_mov.add_scatter(
+          x=totales_plaza["PLAZA"],
+          y=totales_plaza["Ítems"],
+          text=totales_plaza["Ítems"].apply(lambda x: f"<b>{x:,}</b>"),
+          mode="text",
+          textposition="top center",
+          showlegend=False,
+          hoverinfo="skip",
+      )
+      max_y = totales_plaza["Ítems"].max() if not totales_plaza.empty else 10
+      fig_mov.update_yaxes(range=[0, max_y * 1.15])
+      fig_mov.update_layout(clickmode="event+select")
 
-    with ga2:
-      st.subheader("Movimiento / Estatus Actual")
-      orden_grupos = ["Circuitos", "Rutas", "Inventario", "Otros Movimientos"]
+      evento_grafica = st.plotly_chart(
+          fig_mov,
+          use_container_width=True,
+          on_select="rerun",
+          selection_mode="points",
+          key="chart_ar_plazas",
+      )
+
+      # Detectar clic en barra
+      puntos = []
+      if evento_grafica and isinstance(evento_grafica, dict):
+        puntos = evento_grafica.get("selection", {}).get("points", [])
+      elif hasattr(evento_grafica, "selection"):
+        puntos = evento_grafica.selection.points
+
+      if puntos:
+        pt = puntos[0]
+        cdata = pt.get("customdata", [])
+        plaza_clic = cdata[0] if len(cdata) > 0 else pt.get("x")
+        grupo_clic = cdata[1] if len(cdata) > 1 else None
+
+        st.markdown("---")
+        with st.container(border=True):
+          titulo_det = f"🔍 Desglose Detallado: Plaza **{plaza_clic}**"
+          if grupo_clic:
+            titulo_det += f" — Grupo **{grupo_clic}**"
+          st.subheader(titulo_det)
+
+          df_det_ar = df_ar_f[df_ar_f["PLAZA"] == plaza_clic]
+          if grupo_clic:
+            df_det_ar = df_det_ar[df_det_ar["GRUPO_MOVIMIENTO"] == grupo_clic]
+
+          c_d1, c_d2 = st.columns(2)
+          with c_d1:
+            st.markdown("**Desglose por Movimiento Exacto y Condición**")
+            t_mov_cond = pd.crosstab(
+                df_det_ar["MOVIMIENTO"],
+                df_det_ar["CONDICION"],
+                margins=True,
+                margins_name="Total",
+            )
+            st.dataframe(t_mov_cond, use_container_width=True)
+
+          with c_d2:
+            st.markdown("**Desglose por Tipo de Guía e Incidencia**")
+            t_guia_inc = pd.crosstab(
+                df_det_ar["TIPO_GUIA"],
+                df_det_ar["TIENE_INCIDENCIA"],
+                margins=True,
+                margins_name="Total",
+            )
+            st.dataframe(t_guia_inc, use_container_width=True)
+
+          with st.expander(
+              f"📋 Ver Ítems / Guías ({len(df_det_ar):,} registros)"
+          ):
+            st.dataframe(
+                df_det_ar[[
+                    "CIP",
+                    "GUIA",
+                    "PLAZA",
+                    "CLIENTE",
+                    "MOVIMIENTO",
+                    "CONDICION",
+                    "TIPO_GUIA",
+                    "DIAS_SIN_MOV",
+                    "DIAS_ATRASO",
+                    "DETALLE_INCIDENCIA",
+                ]],
+                use_container_width=True,
+            )
+
+    else:
+      st.subheader(f"Movimiento / Estatus Actual — Plaza {sel_plaza_ar}")
+      st.caption(
+          "💡 Haz clic en cualquier barra o color para ver su desglose"
+          " detallado abajo."
+      )
+
       grp_mov = (
           df_ar_f.groupby(["GRUPO_MOVIMIENTO", "MOVIMIENTO"])
           .size()
@@ -638,6 +785,7 @@ with tab_arqueos:
           color="MOVIMIENTO",
           barmode="stack",
           category_orders={"GRUPO_MOVIMIENTO": orden_grupos},
+          custom_data=["GRUPO_MOVIMIENTO", "MOVIMIENTO"],
           hover_data={
               "GRUPO_MOVIMIENTO": False,
               "MOVIMIENTO": True,
@@ -655,7 +803,77 @@ with tab_arqueos:
       )
       max_y = totales_grupo["Ítems"].max() if not totales_grupo.empty else 10
       fig_mov.update_yaxes(range=[0, max_y * 1.15])
-      st.plotly_chart(fig_mov, use_container_width=True)
+      fig_mov.update_layout(clickmode="event+select")
+
+      evento_grafica = st.plotly_chart(
+          fig_mov,
+          use_container_width=True,
+          on_select="rerun",
+          selection_mode="points",
+          key="chart_ar_detalle",
+      )
+
+      puntos = []
+      if evento_grafica and isinstance(evento_grafica, dict):
+        puntos = evento_grafica.get("selection", {}).get("points", [])
+      elif hasattr(evento_grafica, "selection"):
+        puntos = evento_grafica.selection.points
+
+      if puntos:
+        pt = puntos[0]
+        cdata = pt.get("customdata", [])
+        grupo_clic = cdata[0] if len(cdata) > 0 else pt.get("x")
+        mov_clic = cdata[1] if len(cdata) > 1 else None
+
+        st.markdown("---")
+        with st.container(border=True):
+          titulo_det = (
+              f"🔍 Desglose Detallado: **{sel_plaza_ar}** — **{grupo_clic}**"
+          )
+          if mov_clic:
+            titulo_det += f" ({mov_clic})"
+          st.subheader(titulo_det)
+
+          df_det_ar = df_ar_f[df_ar_f["GRUPO_MOVIMIENTO"] == grupo_clic]
+          if mov_clic:
+            df_det_ar = df_det_ar[df_det_ar["MOVIMIENTO"] == mov_clic]
+
+          c_d1, c_d2 = st.columns(2)
+          with c_d1:
+            st.markdown("**Condición (Vigente vs. Vencida)**")
+            st.dataframe(
+                df_det_ar["CONDICION"].value_counts().reset_index(),
+                use_container_width=True,
+            )
+          with c_d2:
+            st.markdown("**Tipo de Guía e Incidencias**")
+            st.dataframe(
+                pd.crosstab(
+                    df_det_ar["TIPO_GUIA"],
+                    df_det_ar["TIENE_INCIDENCIA"],
+                    margins=True,
+                    margins_name="Total",
+                ),
+                use_container_width=True,
+            )
+
+          with st.expander(
+              f"📋 Ver Ítems / Guías ({len(df_det_ar):,} registros)"
+          ):
+            st.dataframe(
+                df_det_ar[[
+                    "CIP",
+                    "GUIA",
+                    "CLIENTE",
+                    "MOVIMIENTO",
+                    "CONDICION",
+                    "TIPO_GUIA",
+                    "DIAS_SIN_MOV",
+                    "DIAS_ATRASO",
+                    "DETALLE_INCIDENCIA",
+                ]],
+                use_container_width=True,
+            )
 
     st.markdown("---")
     st.subheader("📊 Evolución de Carga por Corte (Vigente vs. Vencida)")
