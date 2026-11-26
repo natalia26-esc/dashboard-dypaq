@@ -98,8 +98,8 @@ def registrar_historial_si_cambio(
       ws = sh.add_worksheet(title=nombre_historial, rows=3000, cols=10)
 
     valores = ws.get_all_values()
-
     ts_actual, fecha_actual = obtener_tiempo_mexico()
+
     nuevo_bloque = df_actual_agrupado.copy()
     nuevo_bloque["CORTE_TS"] = ts_actual
     nuevo_bloque["FECHA"] = fecha_actual
@@ -107,7 +107,6 @@ def registrar_historial_si_cambio(
 
     cols_esperadas = [col_grupo, col_subgrupo, "CANTIDAD", "CORTE_TS", "FECHA"]
 
-    # Si está vacía o los encabezados existentes no coinciden con la estructura actual
     if not valores or len(valores) < 2:
       ws.clear()
       ws.update([cols_esperadas] + nuevo_bloque[cols_esperadas].values.tolist())
@@ -115,7 +114,6 @@ def registrar_historial_si_cambio(
 
     headers_sheet = [str(h).strip() for h in valores[0]]
     if not all(c in headers_sheet for c in cols_esperadas):
-      # Respaldar encabezados anteriores o reiniciar estructura limpia para evitar fallo silencioso
       ws.clear()
       ws.update([cols_esperadas] + nuevo_bloque[cols_esperadas].values.tolist())
       return nuevo_bloque[cols_esperadas]
@@ -147,8 +145,7 @@ def registrar_historial_si_cambio(
     )
 
     if firma_anterior != firma_nueva:
-      filas_a_agregar = nuevo_bloque[headers_sheet].values.tolist()
-      ws.append_rows(filas_a_agregar)
+      ws.append_rows(nuevo_bloque[headers_sheet].values.tolist())
       df_hist = pd.concat(
           [df_hist, nuevo_bloque[headers_sheet]], ignore_index=True
       )
@@ -159,10 +156,9 @@ def registrar_historial_si_cambio(
     return pd.DataFrame()
 
 
-def construir_tabla_avances_con_progreso(
-    df_hist, lista_plazas=None, modo_comparacion="Corte Inicial"
+def construir_tabla_avances_compacta(
+    df_hist, lista_plazas=None, modo_comparacion="Corte Anterior"
 ):
-  """Construye la tabla de avances con % de abatimiento y barras de progreso."""
   if df_hist.empty:
     return pd.DataFrame()
 
@@ -181,8 +177,10 @@ def construir_tabla_avances_con_progreso(
     piv = piv.reindex(lista_plazas, fill_value=0)
 
   cortes = list(piv.columns)
-  col_base = cortes[0] if modo_comparacion == "Corte Inicial" else (
-      cortes[-2] if len(cortes) >= 2 else cortes[0]
+  col_base = (
+      cortes[0]
+      if modo_comparacion == "Corte Inicial"
+      else (cortes[-2] if len(cortes) >= 2 else cortes[0])
   )
   col_actual = cortes[-1]
 
@@ -190,9 +188,9 @@ def construir_tabla_avances_con_progreso(
   base_vals = res[col_base]
   act_vals = res[col_actual]
 
-  res["RESUELTOS / VARIACIÓN"] = base_vals - act_vals
+  # Variación negativa = bajaron los pendientes/guías en plaza (avance positivo)
+  res["VARIACIÓN"] = act_vals - base_vals
 
-  # Porcentaje de avance (abatimiento de pendientes/vencidos)
   avances_pct = []
   for b, a in zip(base_vals, act_vals):
     if b <= 0 and a <= 0:
@@ -208,7 +206,7 @@ def construir_tabla_avances_con_progreso(
 
 
 # ---------------------------------------------------------
-# MAPEO DE PLAZAS EN ACUSES (EXCEPCIONES ESPECÍFICAS + ESTADO P)
+# MAPEO DE PLAZAS EN ACUSES
 # ---------------------------------------------------------
 PLAZAS_OFICIALES = [
     "CANCUN",
@@ -503,90 +501,6 @@ def obtener_datos_arqueos():
   })
 
 
-def render_seccion_avances_progreso(
-    df_hist, titulo, etiqueta_item, key_radio, lista_plazas=None
-):
-  """Renderiza barras de progreso por plaza + tabla con ProgressColumn."""
-  st.subheader(titulo)
-  if df_hist.empty:
-    st.info("Aún no hay registros históricos disponibles para comparar.")
-    return
-
-  modo_comp = st.radio(
-      "Comparar avance contra:",
-      ["Corte Inicial", "Corte Anterior"],
-      horizontal=True,
-      key=key_radio,
-  )
-
-  tabla_av = construir_tabla_avances_con_progreso(
-      df_hist, lista_plazas=lista_plazas, modo_comparacion=modo_comp
-  )
-  if tabla_av.empty:
-    return
-
-  cortes_cols = [
-      c for c in tabla_av.columns if c not in ["RESUELTOS / VARIACIÓN", "AVANCE (%)"]
-  ]
-  col_base = (
-      cortes_cols[0]
-      if modo_comp == "Corte Inicial"
-      else (cortes_cols[-2] if len(cortes_cols) >= 2 else cortes_cols[0])
-  )
-  col_act = cortes_cols[-1]
-
-  tot_base = int(tabla_av[col_base].sum())
-  tot_act = int(tabla_av[col_act].sum())
-  tot_res = tot_base - tot_act
-  pct_global = (
-      100.0
-      if (tot_base <= 0 and tot_act <= 0)
-      else (
-          0.0
-          if tot_base <= 0
-          else max(0.0, min(100.0, ((tot_base - tot_act) / tot_base) * 100.0))
-      )
-  )
-
-  with st.container(border=True):
-    c_g1, c_g2 = st.columns([3, 1])
-    c_g1.markdown(
-        f"**Avance Global ({modo_comp}: `{col_base}` ➡️ Actual: `{col_act}`)**"
-    )
-    c_g2.markdown(
-        f"**{pct_global:.1f}%** abatido ({tot_res:+,} {etiqueta_item})"
-    )
-    st.progress(int(round(pct_global)))
-
-  # Barras de progreso individuales por plaza en cuadrícula
-  plazas_idx = list(tabla_av.index)
-  cols_prog = st.columns(5)
-  for idx, plaza in enumerate(plazas_idx):
-    v_base = int(tabla_av.loc[plaza, col_base])
-    v_act = int(tabla_av.loc[plaza, col_act])
-    v_pct = float(tabla_av.loc[plaza, "AVANCE (%)"])
-    with cols_prog[idx % 5]:
-      with st.container(border=True):
-        st.markdown(f"**{plaza}**")
-        st.progress(int(round(v_pct)))
-        st.caption(f"{v_base:,} ➡️ **{v_act:,}** ({v_pct:.1f}%)")
-
-  # Tabla detallada con barra de progreso integrada
-  st.dataframe(
-      tabla_av,
-      use_container_width=True,
-      column_config={
-          "AVANCE (%)": st.column_config.ProgressColumn(
-              "Avance (%)",
-              help="Porcentaje de reducción respecto al corte seleccionado",
-              format="%.1f%%",
-              min_value=0,
-              max_value=100,
-          )
-      },
-  )
-
-
 # ---------------------------------------------------------
 # ENCABEZADO EJECUTIVO
 # ---------------------------------------------------------
@@ -609,11 +523,14 @@ with tab_acuses:
   if df_ac.empty:
     st.warning("No hay acuses pendientes registrados en la pestaña 'ACUSES'.")
   else:
+    # Guardar historial por PLAZA y RANGO_ATRASO para medir el avance real sobre rezagados (+5 días)
     resumen_hist_ac = (
-        df_ac.groupby(["PLAZA", "AREA"]).size().reset_index(name="CANTIDAD")
+        df_ac.groupby(["PLAZA", "RANGO_ATRASO"])
+        .size()
+        .reset_index(name="CANTIDAD")
     )
     df_hist_ac = registrar_historial_si_cambio(
-        resumen_hist_ac, "ACUSES_HISTORIAL", "PLAZA", "AREA"
+        resumen_hist_ac, "ACUSES_HISTORIAL", "PLAZA", "RANGO_ATRASO"
     )
 
     col_v1, col_v2 = st.columns([2, 2])
@@ -748,15 +665,48 @@ with tab_acuses:
                   f"🟡 0 a 5 días: **{r_0_5}** | 🔴 +5 días: **{r_mas_5}**"
               )
 
-    # AVANCES DE ACUSES CON BARRAS DE PROGRESO
+    # TABLA COMPACTA DE AVANCES POR PLAZA (ENFOCADA EN REZAGADOS > 5 DÍAS)
     st.markdown("---")
-    render_seccion_avances_progreso(
-        df_hist=df_hist_ac,
-        titulo="📈 Avances por Plaza — Abatimiento de Acuses Pendientes",
-        etiqueta_item="acuses",
-        key_radio="radio_av_acuses",
-        lista_plazas=PLAZAS_OFICIALES,
+    c_av1, c_av2 = st.columns([3, 2])
+    c_av1.subheader("📈 Avance por Plaza — Movimiento de Atrasados (+5 días)")
+    modo_ac = c_av2.radio(
+        "Comparar contra:",
+        ["Corte Anterior", "Corte Inicial"],
+        horizontal=True,
+        key="modo_av_ac",
     )
+    st.caption(
+        "Se mide específicamente la reducción en los acuses con **Más de 5"
+        " días** de atraso (las entregas del día alimentan el rango de 0 a 5"
+        " días)."
+    )
+
+    if not df_hist_ac.empty:
+      df_hist_rezago = df_hist_ac[
+          df_hist_ac["RANGO_ATRASO"] == "Más de 5 días"
+      ].copy()
+      tabla_av_ac = construir_tabla_avances_compacta(
+          df_hist_rezago,
+          lista_plazas=PLAZAS_OFICIALES,
+          modo_comparacion=modo_ac,
+      )
+      st.dataframe(
+          tabla_av_ac,
+          use_container_width=True,
+          column_config={
+              "VARIACIÓN": st.column_config.NumberColumn(
+                  "Variación",
+                  help="Negativo (-) significa que se cerraron acuses atrasados",
+                  format="%+d",
+              ),
+              "AVANCE (%)": st.column_config.ProgressColumn(
+                  "Avance Rezago",
+                  format="%.1f%%",
+                  min_value=0,
+                  max_value=100,
+              ),
+          },
+      )
 
 
 # =========================================================
@@ -809,12 +759,104 @@ with tab_arqueos:
     inc_items = len(df_ar_f[df_ar_f["TIENE_INCIDENCIA"] == "Con Incidencia"])
     ocu_items = len(df_ar_f[df_ar_f["TIPO_GUIA"] == "OCU"])
 
+    if "kpi_arqueo_sel" not in st.session_state:
+      st.session_state.kpi_arqueo_sel = None
+
     ka1, ka2, ka3, ka4, ka5 = st.columns(5)
     ka1.metric("📦 Carga Total (Ítems)", f"{tot_items:,}")
     ka2.metric("🟢 Carga Vigente", f"{vig_items:,}")
     ka3.metric("🔴 Carga Vencida", f"{ven_items:,}")
-    ka4.metric("⚠️ Con Incidencia", f"{inc_items:,}")
-    ka5.metric("🏢 Ocurres (OCU)", f"{ocu_items:,}")
+
+    with ka4:
+      st.metric("⚠️ Con Incidencia", f"{inc_items:,}")
+      es_inc_sel = st.session_state.kpi_arqueo_sel == "INCIDENCIA"
+      if st.button(
+          "Ocultar data" if es_inc_sel else "🔍 Ver data",
+          key="btn_ver_inc",
+          use_container_width=True,
+          type="primary" if es_inc_sel else "secondary",
+      ):
+        st.session_state.kpi_arqueo_sel = None if es_inc_sel else "INCIDENCIA"
+        st.rerun()
+
+    with ka5:
+      st.metric("🏢 Ocurres (OCU)", f"{ocu_items:,}")
+      es_ocu_sel = st.session_state.kpi_arqueo_sel == "OCU"
+      if st.button(
+          "Ocultar data" if es_ocu_sel else "🔍 Ver data",
+          key="btn_ver_ocu",
+          use_container_width=True,
+          type="primary" if es_ocu_sel else "secondary",
+      ):
+        st.session_state.kpi_arqueo_sel = None if es_ocu_sel else "OCU"
+        st.rerun()
+
+    # DESGLOSE INMEDIATO AL SELECCIONAR "CON INCIDENCIA" U "OCURRES (OCU)"
+    if st.session_state.kpi_arqueo_sel:
+      modo_kpi = st.session_state.kpi_arqueo_sel
+      st.markdown("---")
+      with st.container(border=True):
+        ck1, ck2 = st.columns([5, 1])
+        if modo_kpi == "INCIDENCIA":
+          df_kpi_det = df_ar_f[
+              df_ar_f["TIENE_INCIDENCIA"] == "Con Incidencia"
+          ]
+          ck1.subheader(
+              f"⚠️ Detalle de Carga con Incidencia ({len(df_kpi_det):,} ítems)"
+          )
+        else:
+          df_kpi_det = df_ar_f[df_ar_f["TIPO_GUIA"] == "OCU"]
+          ck1.subheader(
+              f"🏢 Detalle de Carga en Ocurre — OCU ({len(df_kpi_det):,} ítems)"
+          )
+
+        if ck2.button("✖ Cerrar", key="cerrar_kpi_ar", use_container_width=True):
+          st.session_state.kpi_arqueo_sel = None
+          st.rerun()
+
+        if df_kpi_det.empty:
+          st.info("No hay registros con los filtros actuales.")
+        else:
+          r_k1, r_k2 = st.columns(2)
+          with r_k1:
+            st.markdown("**Resumen por Plaza y Condición**")
+            st.dataframe(
+                pd.crosstab(
+                    df_kpi_det["PLAZA"],
+                    df_kpi_det["CONDICION"],
+                    margins=True,
+                    margins_name="Total",
+                ),
+                use_container_width=True,
+            )
+          with r_k2:
+            st.markdown("**Resumen por Movimiento**")
+            st.dataframe(
+                pd.crosstab(
+                    df_kpi_det["MOVIMIENTO"],
+                    df_kpi_det["CONDICION"],
+                    margins=True,
+                    margins_name="Total",
+                ),
+                use_container_width=True,
+            )
+
+          st.dataframe(
+              df_kpi_det[[
+                  "CIP",
+                  "GUIA",
+                  "PLAZA",
+                  "CLIENTE",
+                  "MOVIMIENTO",
+                  "CONDICION",
+                  "TIPO_GUIA",
+                  "DIAS_SIN_MOV",
+                  "DIAS_ATRASO",
+                  "DETALLE_INCIDENCIA",
+              ]],
+              use_container_width=True,
+              hide_index=True,
+          )
 
     st.markdown("---")
 
@@ -1053,46 +1095,43 @@ with tab_arqueos:
                 hide_index=True,
             )
 
+    # ÚNICA SECCIÓN DE AVANCE DE ENTREGAS EN ARQUEOS (SIN DUPLICIDAD)
     st.markdown("---")
-    st.subheader("📊 Evolución de Carga por Corte (Vigente vs. Vencida)")
+    ca_av1, ca_av2 = st.columns([3, 2])
+    ca_av1.subheader("📈 Avance de Entregas por Plaza (Salida de Guías en Arqueo)")
+    modo_ar = ca_av2.radio(
+        "Comparar contra:",
+        ["Corte Anterior", "Corte Inicial"],
+        horizontal=True,
+        key="modo_av_ar",
+    )
+    st.caption(
+        "Al entregarse una guía desaparece del arqueo; el avance refleja la"
+        " reducción de ítems pendientes por plaza."
+    )
+
     if not df_hist_ar.empty:
-      df_hist_ar["CANTIDAD"] = pd.to_numeric(
-          df_hist_ar["CANTIDAD"], errors="coerce"
-      ).fillna(0)
-
-      hist_filtrado = df_hist_ar.copy()
+      hist_ar_f = df_hist_ar.copy()
       if sel_plaza_ar != "Todas":
-        hist_filtrado = hist_filtrado[hist_filtrado["PLAZA"] == sel_plaza_ar]
+        hist_ar_f = hist_ar_f[hist_ar_f["PLAZA"] == sel_plaza_ar]
 
-      resumen_cortes = (
-          hist_filtrado.groupby(["CORTE_TS", "CONDICION"])["CANTIDAD"]
-          .sum()
-          .reset_index()
+      tabla_av_ar = construir_tabla_avances_compacta(
+          hist_ar_f, lista_plazas=None, modo_comparacion=modo_ar
       )
-
-      fig_ev_simple = px.bar(
-          resumen_cortes,
-          x="CORTE_TS",
-          y="CANTIDAD",
-          color="CONDICION",
-          barmode="group",
-          color_discrete_map={"Vigente": "#00CC96", "Vencida": "#EF553B"},
-          text_auto=True,
-          labels={
-              "CORTE_TS": "Fecha / Hora del Corte",
-              "CANTIDAD": "Total Ítems",
-              "CONDICION": "Condición",
+      st.dataframe(
+          tabla_av_ar,
+          use_container_width=True,
+          column_config={
+              "VARIACIÓN": st.column_config.NumberColumn(
+                  "Variación",
+                  help="Negativo (-) significa guías entregadas / salidas de plaza",
+                  format="%+d",
+              ),
+              "AVANCE (%)": st.column_config.ProgressColumn(
+                  "Avance Entregas",
+                  format="%.1f%%",
+                  min_value=0,
+                  max_value=100,
+              ),
           },
-      )
-      st.plotly_chart(fig_ev_simple, use_container_width=True)
-
-      # AVANCES DE ARQUEOS CON BARRAS DE PROGRESO (REDUCCIÓN DE CARGA VENCIDA)
-      st.markdown("---")
-      df_hist_vencida = df_hist_ar[df_hist_ar["CONDICION"] == "Vencida"].copy()
-      render_seccion_avances_progreso(
-          df_hist=df_hist_vencida,
-          titulo="📈 Avances por Plaza — Abatimiento de Carga Vencida",
-          etiqueta_item="ítems vencidos",
-          key_radio="radio_av_arqueos",
-          lista_plazas=None,
       )
