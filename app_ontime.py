@@ -33,6 +33,20 @@ def obtener_tiempo_mexico():
   return ahora.strftime("%Y-%m-%d %H:%M"), ahora.strftime("%Y-%m-%d")
 
 
+def limpiar_folio_exacto(val):
+  if val is None or val == "":
+    return ""
+  if isinstance(val, (int, float)):
+    return f"{int(val)}" if float(val).is_integer() else str(val)
+  s = str(val).strip()
+  try:
+    if "E+" in s.upper() or "E-" in s.upper():
+      return f"{int(float(s.replace(',', '.')))}"
+  except Exception:
+    pass
+  return s
+
+
 @st.cache_data(ttl=60)
 def leer_hoja_raw(nombre_pestana):
   try:
@@ -41,8 +55,30 @@ def leer_hoja_raw(nombre_pestana):
     valores = ws.get_all_values()
     if not valores or len(valores) < 2:
       return pd.DataFrame()
+
     headers = [str(h).strip() for h in valores[0]]
-    return pd.DataFrame(valores[1:], columns=headers)
+    df = pd.DataFrame(valores[1:], columns=headers)
+
+    cols_id = {
+        "FOLIO_GUIA",
+        "CIP",
+        "GUIA",
+        "GUIA INTERNA",
+        "FOLIO REFERENCIA",
+        "CIP REFERENCIA",
+    }
+    if any(h.upper() in cols_id for h in headers):
+      valores_raw = ws.get_all_values(value_render_option="UNFORMATTED_VALUE")
+      if len(valores_raw) == len(valores):
+        for idx_col, h in enumerate(headers):
+          if h.upper() in cols_id:
+            df[h] = [
+                limpiar_folio_exacto(fila[idx_col])
+                if idx_col < len(fila)
+                else ""
+                for fila in valores_raw[1:]
+            ]
+    return df
   except Exception as e:
     st.error(f"Error al leer la pestaña '{nombre_pestana}': {e}")
     return pd.DataFrame()
@@ -52,11 +88,15 @@ def registrar_historial_si_cambio(
     df_actual_agrupado, nombre_historial, col_grupo, col_subgrupo
 ):
   if df_actual_agrupado.empty:
-    return leer_hoja_raw(nombre_historial)
+    return pd.DataFrame()
 
   try:
     sh = conectar_gsheets()
-    ws = sh.worksheet(nombre_historial)
+    try:
+      ws = sh.worksheet(nombre_historial)
+    except gspread.exceptions.WorksheetNotFound:
+      ws = sh.add_worksheet(title=nombre_historial, rows=3000, cols=10)
+
     valores = ws.get_all_values()
 
     ts_actual, fecha_actual = obtener_tiempo_mexico()
@@ -65,37 +105,106 @@ def registrar_historial_si_cambio(
     nuevo_bloque["FECHA"] = fecha_actual
     nuevo_bloque["CANTIDAD"] = nuevo_bloque["CANTIDAD"].astype(str)
 
+    cols_esperadas = [col_grupo, col_subgrupo, "CANTIDAD", "CORTE_TS", "FECHA"]
+
+    # Si está vacía o los encabezados existentes no coinciden con la estructura actual
     if not valores or len(valores) < 2:
       ws.clear()
-      ws.update([nuevo_bloque.columns.tolist()] + nuevo_bloque.values.tolist())
-      return nuevo_bloque
+      ws.update([cols_esperadas] + nuevo_bloque[cols_esperadas].values.tolist())
+      return nuevo_bloque[cols_esperadas]
 
-    df_hist = pd.DataFrame(valores[1:], columns=valores[0])
+    headers_sheet = [str(h).strip() for h in valores[0]]
+    if not all(c in headers_sheet for c in cols_esperadas):
+      # Respaldar encabezados anteriores o reiniciar estructura limpia para evitar fallo silencioso
+      ws.clear()
+      ws.update([cols_esperadas] + nuevo_bloque[cols_esperadas].values.tolist())
+      return nuevo_bloque[cols_esperadas]
+
+    df_hist = pd.DataFrame(valores[1:], columns=headers_sheet)
+    df_hist = df_hist[df_hist["CORTE_TS"].astype(str).str.strip() != ""].copy()
+
+    if df_hist.empty:
+      ws.clear()
+      ws.update([cols_esperadas] + nuevo_bloque[cols_esperadas].values.tolist())
+      return nuevo_bloque[cols_esperadas]
+
     ultimo_corte = df_hist["CORTE_TS"].iloc[-1]
     df_ultimo = df_hist[df_hist["CORTE_TS"] == ultimo_corte]
 
     firma_anterior = sorted(
         zip(
-            df_ultimo[col_grupo],
-            df_ultimo[col_subgrupo],
+            df_ultimo[col_grupo].astype(str),
+            df_ultimo[col_subgrupo].astype(str),
             df_ultimo["CANTIDAD"].astype(str),
         )
     )
     firma_nueva = sorted(
         zip(
-            nuevo_bloque[col_grupo],
-            nuevo_bloque[col_subgrupo],
+            nuevo_bloque[col_grupo].astype(str),
+            nuevo_bloque[col_subgrupo].astype(str),
             nuevo_bloque["CANTIDAD"].astype(str),
         )
     )
 
     if firma_anterior != firma_nueva:
-      ws.append_rows(nuevo_bloque.values.tolist())
-      df_hist = pd.concat([df_hist, nuevo_bloque], ignore_index=True)
+      filas_a_agregar = nuevo_bloque[headers_sheet].values.tolist()
+      ws.append_rows(filas_a_agregar)
+      df_hist = pd.concat(
+          [df_hist, nuevo_bloque[headers_sheet]], ignore_index=True
+      )
 
     return df_hist
-  except Exception:
+  except Exception as e:
+    st.warning(f"Aviso en historial '{nombre_historial}': {e}")
     return pd.DataFrame()
+
+
+def construir_tabla_avances_con_progreso(
+    df_hist, lista_plazas=None, modo_comparacion="Corte Inicial"
+):
+  """Construye la tabla de avances con % de abatimiento y barras de progreso."""
+  if df_hist.empty:
+    return pd.DataFrame()
+
+  df_h = df_hist.copy()
+  df_h["CANTIDAD"] = pd.to_numeric(df_h["CANTIDAD"], errors="coerce").fillna(0)
+
+  piv = df_h.pivot_table(
+      index="PLAZA",
+      columns="CORTE_TS",
+      values="CANTIDAD",
+      aggfunc="sum",
+      fill_value=0,
+  ).astype(int)
+
+  if lista_plazas:
+    piv = piv.reindex(lista_plazas, fill_value=0)
+
+  cortes = list(piv.columns)
+  col_base = cortes[0] if modo_comparacion == "Corte Inicial" else (
+      cortes[-2] if len(cortes) >= 2 else cortes[0]
+  )
+  col_actual = cortes[-1]
+
+  res = piv.copy()
+  base_vals = res[col_base]
+  act_vals = res[col_actual]
+
+  res["RESUELTOS / VARIACIÓN"] = base_vals - act_vals
+
+  # Porcentaje de avance (abatimiento de pendientes/vencidos)
+  avances_pct = []
+  for b, a in zip(base_vals, act_vals):
+    if b <= 0 and a <= 0:
+      avances_pct.append(100.0)
+    elif b <= 0 and a > 0:
+      avances_pct.append(0.0)
+    else:
+      pct = ((b - a) / b) * 100.0
+      avances_pct.append(round(max(0.0, min(100.0, pct)), 1))
+
+  res["AVANCE (%)"] = avances_pct
+  return res
 
 
 # ---------------------------------------------------------
@@ -119,7 +228,6 @@ def unificar_plaza_acuses(estado_col_p, destino_col_o):
   edo = str(estado_col_p).strip().upper()
   dest = str(destino_col_o).strip().upper()
 
-  # 1. Excepciones específicas por municipio/destino
   if dest == "METEPEC":
     return "PUEBLA"
   if dest in ["LEON", "LEÓN", "SILAO", "PUERTO RICO"]:
@@ -134,7 +242,6 @@ def unificar_plaza_acuses(estado_col_p, destino_col_o):
   if dest in ["FELIPE CARRILLO PUERTO", "CHETUMAL"]:
     return "MERIDA"
 
-  # 2. Agrupación por Estado Destino (Columna P)
   if "QUINTANA" in edo:
     return "CANCUN"
   if "YUCATAN" in edo or "YUCATÁN" in edo:
@@ -396,6 +503,90 @@ def obtener_datos_arqueos():
   })
 
 
+def render_seccion_avances_progreso(
+    df_hist, titulo, etiqueta_item, key_radio, lista_plazas=None
+):
+  """Renderiza barras de progreso por plaza + tabla con ProgressColumn."""
+  st.subheader(titulo)
+  if df_hist.empty:
+    st.info("Aún no hay registros históricos disponibles para comparar.")
+    return
+
+  modo_comp = st.radio(
+      "Comparar avance contra:",
+      ["Corte Inicial", "Corte Anterior"],
+      horizontal=True,
+      key=key_radio,
+  )
+
+  tabla_av = construir_tabla_avances_con_progreso(
+      df_hist, lista_plazas=lista_plazas, modo_comparacion=modo_comp
+  )
+  if tabla_av.empty:
+    return
+
+  cortes_cols = [
+      c for c in tabla_av.columns if c not in ["RESUELTOS / VARIACIÓN", "AVANCE (%)"]
+  ]
+  col_base = (
+      cortes_cols[0]
+      if modo_comp == "Corte Inicial"
+      else (cortes_cols[-2] if len(cortes_cols) >= 2 else cortes_cols[0])
+  )
+  col_act = cortes_cols[-1]
+
+  tot_base = int(tabla_av[col_base].sum())
+  tot_act = int(tabla_av[col_act].sum())
+  tot_res = tot_base - tot_act
+  pct_global = (
+      100.0
+      if (tot_base <= 0 and tot_act <= 0)
+      else (
+          0.0
+          if tot_base <= 0
+          else max(0.0, min(100.0, ((tot_base - tot_act) / tot_base) * 100.0))
+      )
+  )
+
+  with st.container(border=True):
+    c_g1, c_g2 = st.columns([3, 1])
+    c_g1.markdown(
+        f"**Avance Global ({modo_comp}: `{col_base}` ➡️ Actual: `{col_act}`)**"
+    )
+    c_g2.markdown(
+        f"**{pct_global:.1f}%** abatido ({tot_res:+,} {etiqueta_item})"
+    )
+    st.progress(int(round(pct_global)))
+
+  # Barras de progreso individuales por plaza en cuadrícula
+  plazas_idx = list(tabla_av.index)
+  cols_prog = st.columns(5)
+  for idx, plaza in enumerate(plazas_idx):
+    v_base = int(tabla_av.loc[plaza, col_base])
+    v_act = int(tabla_av.loc[plaza, col_act])
+    v_pct = float(tabla_av.loc[plaza, "AVANCE (%)"])
+    with cols_prog[idx % 5]:
+      with st.container(border=True):
+        st.markdown(f"**{plaza}**")
+        st.progress(int(round(v_pct)))
+        st.caption(f"{v_base:,} ➡️ **{v_act:,}** ({v_pct:.1f}%)")
+
+  # Tabla detallada con barra de progreso integrada
+  st.dataframe(
+      tabla_av,
+      use_container_width=True,
+      column_config={
+          "AVANCE (%)": st.column_config.ProgressColumn(
+              "Avance (%)",
+              help="Porcentaje de reducción respecto al corte seleccionado",
+              format="%.1f%%",
+              min_value=0,
+              max_value=100,
+          )
+      },
+  )
+
+
 # ---------------------------------------------------------
 # ENCABEZADO EJECUTIVO
 # ---------------------------------------------------------
@@ -525,6 +716,7 @@ with tab_acuses:
                       "RANGO_ATRASO",
                   ]],
                   use_container_width=True,
+                  hide_index=True,
               )
 
     else:
@@ -556,30 +748,15 @@ with tab_acuses:
                   f"🟡 0 a 5 días: **{r_0_5}** | 🔴 +5 días: **{r_mas_5}**"
               )
 
+    # AVANCES DE ACUSES CON BARRAS DE PROGRESO
     st.markdown("---")
-    st.subheader("📈 Tabla de Avances por Plaza (Histórico de Cortes)")
-    if not df_hist_ac.empty:
-      df_hist_ac["CANTIDAD"] = pd.to_numeric(
-          df_hist_ac["CANTIDAD"], errors="coerce"
-      ).fillna(0)
-      tabla_avances_ac = (
-          df_hist_ac.pivot_table(
-              index="PLAZA",
-              columns="CORTE_TS",
-              values="CANTIDAD",
-              aggfunc="sum",
-              fill_value=0,
-          )
-          .reindex(PLAZAS_OFICIALES, fill_value=0)
-          .astype(int)
-      )
-      if tabla_avances_ac.shape[1] >= 2:
-        cortes_cols = list(tabla_avances_ac.columns)
-        tabla_avances_ac["VARIACIÓN ÚLTIMO CORTE"] = (
-            tabla_avances_ac[cortes_cols[-1]]
-            - tabla_avances_ac[cortes_cols[-2]]
-        )
-      st.dataframe(tabla_avances_ac, use_container_width=True)
+    render_seccion_avances_progreso(
+        df_hist=df_hist_ac,
+        titulo="📈 Avances por Plaza — Abatimiento de Acuses Pendientes",
+        etiqueta_item="acuses",
+        key_radio="radio_av_acuses",
+        lista_plazas=PLAZAS_OFICIALES,
+    )
 
 
 # =========================================================
@@ -759,6 +936,7 @@ with tab_arqueos:
                     "DETALLE_INCIDENCIA",
                 ]],
                 use_container_width=True,
+                hide_index=True,
             )
 
     else:
@@ -872,6 +1050,7 @@ with tab_arqueos:
                     "DETALLE_INCIDENCIA",
                 ]],
                 use_container_width=True,
+                hide_index=True,
             )
 
     st.markdown("---")
@@ -907,21 +1086,13 @@ with tab_arqueos:
       )
       st.plotly_chart(fig_ev_simple, use_container_width=True)
 
-      with st.expander("📋 Ver Tabla de Avances de Carga Vencida por Plaza"):
-        tabla_av_ar = (
-            df_hist_ar[df_hist_ar["CONDICION"] == "Vencida"]
-            .pivot_table(
-                index="PLAZA",
-                columns="CORTE_TS",
-                values="CANTIDAD",
-                aggfunc="sum",
-                fill_value=0,
-            )
-            .astype(int)
-        )
-        if tabla_av_ar.shape[1] >= 2:
-          cols_ar_c = list(tabla_av_ar.columns)
-          tabla_av_ar["VARIACIÓN ÚLTIMO CORTE"] = (
-              tabla_av_ar[cols_ar_c[-1]] - tabla_av_ar[cols_ar_c[-2]]
-          )
-        st.dataframe(tabla_av_ar, use_container_width=True)
+      # AVANCES DE ARQUEOS CON BARRAS DE PROGRESO (REDUCCIÓN DE CARGA VENCIDA)
+      st.markdown("---")
+      df_hist_vencida = df_hist_ar[df_hist_ar["CONDICION"] == "Vencida"].copy()
+      render_seccion_avances_progreso(
+          df_hist=df_hist_vencida,
+          titulo="📈 Avances por Plaza — Abatimiento de Carga Vencida",
+          etiqueta_item="ítems vencidos",
+          key_radio="radio_av_arqueos",
+          lista_plazas=None,
+      )
