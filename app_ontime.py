@@ -99,13 +99,14 @@ def registrar_historial_si_cambio(
 
 
 # ---------------------------------------------------------
-# MAPEO DE LAS 8 PLAZAS OFICIALES EN ACUSES
+# MAPEO DE PLAZAS EN ACUSES (BASADO EN COLUMNA P: D_Estado Destino)
 # ---------------------------------------------------------
-PLAZAS_8 = [
+PLAZAS_OFICIALES = [
     "CANCUN",
     "MERIDA",
     "TUXTLA",
     "TOLUCA",
+    "PUEBLA",
     "VILLAHERMOSA",
     "CIUDAD DEL CARMEN",
     "CAMPECHE",
@@ -113,102 +114,27 @@ PLAZAS_8 = [
 ]
 
 
-def unificar_plaza_acuses(destino_val, estado_val):
-  dest = str(destino_val).strip().upper()
-  edo = str(estado_val).strip().upper()
+def unificar_plaza_por_estado_p(estado_col_p, destino_col_o):
+  edo = str(estado_col_p).strip().upper()
+  dest = str(destino_col_o).strip().upper()
 
-  if "CARMEN" in dest or dest in ["SABANCUY", "ATASTA", "ISLA AGUADA"]:
-    return "CIUDAD DEL CARMEN"
-  if "QUINTANA" in edo or dest in [
-      "CANCUN",
-      "PLAYA DEL CARMEN",
-      "CHETUMAL",
-      "TULUM",
-      "COZUMEL",
-      "FELIPE CARRILLO PUERTO",
-      "PUERTO MORELOS",
-      "BACALAR",
-      "ISLA MUJERES",
-  ]:
+  if "QUINTANA" in edo:
     return "CANCUN"
-  if "YUCATAN" in edo or dest in [
-      "MERIDA",
-      "UMAN",
-      "VALLADOLID",
-      "KANASIN",
-      "TIZIMIN",
-      "PROGRESO",
-      "MOTUL",
-      "TICUL",
-      "TEKAX",
-      "CONKAL",
-      "IZAMAL",
-  ]:
+  if "YUCATAN" in edo or "YUCATÁN" in edo:
     return "MERIDA"
-  if (
-      "CHIAPAS" in edo
-      or "TUXTLA" in dest
-      or dest
-      in [
-          "TAPACHULA",
-          "SAN CRISTOBAL DE LAS CASAS",
-          "PALENQUE",
-          "COMITAN",
-          "OCOSINGO",
-          "VILLAFLORES",
-          "CHIAPA DE CORZO",
-          "TONALA",
-          "CINTALAPA",
-      ]
-  ):
+  if "CHIAPAS" in edo:
     return "TUXTLA"
-  if "TABASCO" in edo or dest in [
-      "VILLAHERMOSA",
-      "CARDENAS",
-      "MACUSPANA",
-      "PARAISO",
-      "COMALCALCO",
-      "EMILIANO ZAPATA",
-      "CUNDUACAN",
-      "TENOSIQUE DE PINO SUAREZ",
-      "TEAPA",
-      "HUIMANGUILLO",
-  ]:
+  if "TABASCO" in edo:
     return "VILLAHERMOSA"
-  if "CAMPECHE" in edo or dest in [
-      "CAMPECHE",
-      "ESCARCEGA",
-      "CHAMPOTON",
-      "CALKINI",
-      "HECELCHAKAN",
-      "CANDELARIA",
-      "TENABO",
-      "HOPELCHEN",
-  ]:
+  if "CAMPECHE" in edo:
+    if "CARMEN" in dest or dest in ["SABANCUY", "ATASTA", "ISLA AGUADA"]:
+      return "CIUDAD DEL CARMEN"
     return "CAMPECHE"
-  if (
-      "VERACRUZ" in edo
-      or "OAXACA" in edo
-      or dest
-      in [
-          "VERACRUZ",
-          "BOCA DEL RIO",
-          "XALAPA",
-          "CORDOBA",
-          "ORIZABA",
-          "COATZACOALCOS",
-          "POZA RICA",
-          "MINATITLAN",
-          "TUXTEPEC",
-          "SAN ANDRES TUXTLA",
-          "TIERRA BLANCA",
-          "COSAMALOAPAN",
-          "ACAYUCAN",
-          "SALINA CRUZ",
-          "OAXACA",
-      ]
-  ):
+  if "VERACRUZ" in edo or "OAXACA" in edo:
     return "VERACRUZ"
+  if "PUEBLA" in edo or "TLAXCALA" in edo:
+    return "PUEBLA"
+  # Estado de México, CDMX, Guanajuato, etc.
   return "TOLUCA"
 
 
@@ -222,14 +148,15 @@ def obtener_datos_acuses():
     return pd.DataFrame()
 
   cols = list(df.columns)
+  col_folio = "FOLIO_GUIA" if "FOLIO_GUIA" in cols else cols[1]
   col_est_guia = "ESTATUS" if "ESTATUS" in cols else cols[3]
   col_cliente = "CLIENTE" if "CLIENTE" in cols else cols[5]
   col_f_doc = (
       "Fecha Documentacion" if "Fecha Documentacion" in cols else cols[10]
   )
   col_f_ent = "Fecha Entrega" if "Fecha Entrega" in cols else cols[11]
-  col_dest = "Destino" if "Destino" in cols else cols[14]
-  col_edo_dest = "D_Estado Destino" if "D_Estado Destino" in cols else cols[15]
+  col_dest_o = "Destino" if "Destino" in cols else cols[14]
+  col_edo_p = "D_Estado Destino" if "D_Estado Destino" in cols else cols[15]
   col_obs = "OBSERVACIONES" if "OBSERVACIONES" in cols else cols[20]
 
   estatus_cols = [
@@ -248,7 +175,6 @@ def obtener_datos_acuses():
   f_ent_s = pd.to_datetime(df[col_f_ent], errors="coerce")
   f_doc_s = pd.to_datetime(df[col_f_doc], errors="coerce")
 
-  # Solo pendientes activos: sin CONTRARECIBO, no canceladas (X), con Fecha Entrega y año vigente
   anio_actual = (datetime.utcnow() - timedelta(hours=6)).year
   mask = (
       (~obs_s.str.contains("CONTRARECIBO", na=False))
@@ -261,6 +187,7 @@ def obtener_datos_acuses():
   if df_p.empty:
     return pd.DataFrame()
 
+  f_ent_p = f_ent_s[mask]
   fechas_pasos = {}
   for c in estatus_cols:
     val_clean = (
@@ -271,23 +198,49 @@ def obtener_datos_acuses():
     )
     fechas_pasos[c] = pd.to_datetime(val_clean, errors="coerce", dayfirst=True)
 
+  hoy = pd.to_datetime((datetime.utcnow() - timedelta(hours=6)).date())
+
   areas_list = []
+  estatus_pend_list = []
+  dias_atraso_list = []
+  rango_atraso_list = []
+
   for idx in range(len(df_p)):
     ultimo_idx = -1
+    ultima_fecha = pd.NaT
+
     for p_idx, c in enumerate(estatus_cols):
-      if not pd.isna(fechas_pasos[c].iloc[idx]):
+      val_f = fechas_pasos[c].iloc[idx]
+      if not pd.isna(val_f):
         ultimo_idx = p_idx
+        ultima_fecha = val_f
+
     paso_pend_idx = min(ultimo_idx + 1, len(estatus_cols) - 1)
+    nombre_paso = estatus_cols[paso_pend_idx] if estatus_cols else "SIN ESTATUS"
+
     if paso_pend_idx in [0, 1]:
-      areas_list.append("OPERACIONES")
+      area = "OPERACIONES"
     elif paso_pend_idx in [2, 3]:
-      areas_list.append("ADMINISTRACIÓN")
+      area = "ADMINISTRACIÓN"
     else:
-      areas_list.append("MESA DE CONTROL")
+      area = "MESA DE CONTROL"
+
+    ref_fecha = ultima_fecha if not pd.isna(ultima_fecha) else f_ent_p.iloc[idx]
+    dias = (
+        max(0, int((hoy - ref_fecha.normalize()).days))
+        if not pd.isna(ref_fecha)
+        else 0
+    )
+    rango = "1 a 5 días" if dias <= 5 else "Más de 5 días"
+
+    areas_list.append(area)
+    estatus_pend_list.append(nombre_paso)
+    dias_atraso_list.append(dias)
+    rango_atraso_list.append(rango)
 
   plazas_unificadas = [
-      unificar_plaza_acuses(d, e)
-      for d, e in zip(df_p[col_dest], df_p[col_edo_dest])
+      unificar_plaza_por_estado_p(edo, dest)
+      for edo, dest in zip(df_p[col_edo_p], df_p[col_dest_o])
   ]
   clientes_clean = (
       df_p[col_cliente]
@@ -298,14 +251,21 @@ def obtener_datos_acuses():
   )
 
   return pd.DataFrame({
+      "FOLIO_GUIA": df_p[col_folio].astype(str).values,
       "PLAZA": plazas_unificadas,
+      "MUNICIPIO_DESTINO": (
+          df_p[col_dest_o].astype(str).str.strip().str.upper().values
+      ),
       "CLIENTE": clientes_clean.values,
       "AREA": areas_list,
+      "ESTATUS_PENDIENTE": estatus_pend_list,
+      "DIAS_ATRASO": dias_atraso_list,
+      "RANGO_ATRASO": rango_atraso_list,
   })
 
 
 # ---------------------------------------------------------
-# PROCESAMIENTO DE ARQUEOS
+# PROCESAMIENTO DE ARQUEOS (PLAZA DESDE COLUMNA F: D_Plaza)
 # ---------------------------------------------------------
 @st.cache_data(ttl=60)
 def obtener_datos_arqueos():
@@ -315,7 +275,7 @@ def obtener_datos_arqueos():
 
   cols = list(df.columns)
   col_mov = "Movimiento" if "Movimiento" in cols else cols[3]
-  col_plaza = "D_Plaza" if "D_Plaza" in cols else cols[5]
+  col_plaza_f = cols[5] if len(cols) > 5 else "D_Plaza"
   col_dias_at = "Dias Atraso" if "Dias Atraso" in cols else cols[11]
   col_ead = "EAD" if "EAD" in cols else cols[25]
   col_tipo_ent = "Tipo Entrega" if "Tipo Entrega" in cols else cols[33]
@@ -336,10 +296,13 @@ def obtener_datos_arqueos():
       "REFORMA": "TOLUCA",
       "TUXTLA GUTIERREZ": "TUXTLA",
       "TUXTLA GUTIÉRREZ": "TUXTLA",
+      "PUEBLA CONCECION": "PUEBLA",
+      "PUEBLA CONCESION": "PUEBLA",
+      "TLAXCALA": "PUEBLA",
   }
 
   plazas_clean = (
-      df[col_plaza]
+      df[col_plaza_f]
       .astype(str)
       .str.strip()
       .str.upper()
@@ -393,7 +356,7 @@ def obtener_datos_arqueos():
 
 
 # ---------------------------------------------------------
-# INTERFAZ EJECUTIVA
+# ENCABEZADO EJECUTIVO
 # ---------------------------------------------------------
 col_t1, col_t2 = st.columns([5, 1])
 col_t1.title("📊 Tablero Ejecutivo - Acuses y Arqueos")
@@ -406,7 +369,7 @@ tab_acuses, tab_arqueos = st.tabs(
 )
 
 # =========================================================
-# PESTAÑA 1: ACUSES (POR PLAZA Y POR CLIENTE)
+# PESTAÑA 1: ACUSES
 # =========================================================
 with tab_acuses:
   df_ac = obtener_datos_acuses()
@@ -421,87 +384,126 @@ with tab_acuses:
         resumen_hist_ac, "ACUSES_HISTORIAL", "PLAZA", "AREA"
     )
 
-    vista_ac = st.radio(
-        "Selecciona cómo visualizar los pendientes:",
+    col_v1, col_v2 = st.columns([2, 2])
+    vista_ac = col_v1.radio(
+        "Visualizar pendientes:",
         ["🏢 Por Plaza", "👥 Por Cliente"],
         horizontal=True,
     )
+    filtro_rango = col_v2.radio(
+        "Intervalo de atraso:",
+        ["Todos", "1 a 5 días", "Más de 5 días"],
+        horizontal=True,
+    )
+
+    df_ac_f = df_ac.copy()
+    if filtro_rango != "Todos":
+      df_ac_f = df_ac_f[df_ac_f["RANGO_ATRASO"] == filtro_rango]
+
     st.markdown("---")
 
+    if "plaza_desglose" not in st.session_state:
+      st.session_state.plaza_desglose = None
+
     if vista_ac == "🏢 Por Plaza":
-      # Tabla cruzada asegurando las 8 plazas oficiales
-      tabla_plaza = pd.crosstab(df_ac["PLAZA"], df_ac["AREA"]).reindex(
-          index=PLAZAS_8,
-          columns=["OPERACIONES", "ADMINISTRACIÓN", "MESA DE CONTROL"],
-          fill_value=0,
+      st.caption(
+          "Haz clic en el botón de una plaza para abrir su desglose detallado"
+          " más abajo."
       )
+      cols = st.columns(3)
+      for idx, plaza in enumerate(PLAZAS_OFICIALES):
+        sub_p = df_ac_f[df_ac_f["PLAZA"] == plaza]
+        op_val = len(sub_p[sub_p["AREA"] == "OPERACIONES"])
+        adm_val = len(sub_p[sub_p["AREA"] == "ADMINISTRACIÓN"])
+        mc_val = len(sub_p[sub_p["AREA"] == "MESA DE CONTROL"])
 
-      cols = st.columns(4)
-      for idx, plaza in enumerate(PLAZAS_8):
-        op_val = int(tabla_plaza.loc[plaza, "OPERACIONES"])
-        adm_val = int(tabla_plaza.loc[plaza, "ADMINISTRACIÓN"])
-        mc_val = int(tabla_plaza.loc[plaza, "MESA DE CONTROL"])
+        r_1_5 = len(sub_p[sub_p["RANGO_ATRASO"] == "1 a 5 días"])
+        r_mas_5 = len(sub_p[sub_p["RANGO_ATRASO"] == "Más de 5 días"])
 
-        with cols[idx % 4]:
+        with cols[idx % 3]:
           with st.container(border=True):
-            st.markdown(f"### 📍 {plaza}")
+            es_sel = st.session_state.plaza_desglose == plaza
+            if st.button(
+                f"{'🔵' if es_sel else '📍'} {plaza}",
+                key=f"sel_p_{plaza}",
+                use_container_width=True,
+                type="primary" if es_sel else "secondary",
+            ):
+              st.session_state.plaza_desglose = None if es_sel else plaza
+              st.rerun()
+
             st.markdown(f"**{op_val:,}** operaciones")
             st.markdown(f"**{adm_val:,}** administración")
             st.markdown(f"**{mc_val:,}** mesa de control")
+            st.caption(f"🟡 1 a 5 días: **{r_1_5}** | 🔴 +5 días: **{r_mas_5}**")
 
-      if not df_hist_ac.empty:
+      if st.session_state.plaza_desglose:
+        p_sel = st.session_state.plaza_desglose
         st.markdown("---")
-        st.subheader("📈 Avance Histórico por Plaza")
-        df_hist_ac["CANTIDAD"] = pd.to_numeric(
-            df_hist_ac["CANTIDAD"], errors="coerce"
-        ).fillna(0)
-        hist_tot = (
-            df_hist_ac.groupby(["CORTE_TS", "PLAZA"])["CANTIDAD"]
-            .sum()
-            .reset_index()
-        )
-        fig_ev = px.line(
-            hist_tot,
-            x="CORTE_TS",
-            y="CANTIDAD",
-            color="PLAZA",
-            markers=True,
-            labels={"CORTE_TS": "Corte", "CANTIDAD": "Pendientes"},
-        )
-        st.plotly_chart(fig_ev, use_container_width=True)
+        with st.container(border=True):
+          c_head1, c_head2 = st.columns([5, 1])
+          c_head1.subheader(f"🔍 Desglose Detallado: Plaza {p_sel}")
+          if c_head2.button("✖ Cerrar desglose", use_container_width=True):
+            st.session_state.plaza_desglose = None
+            st.rerun()
+
+          df_det = df_ac_f[df_ac_f["PLAZA"] == p_sel]
+          if df_det.empty:
+            st.info("Sin pendientes en esta plaza con el filtro seleccionado.")
+          else:
+            d1, d2 = st.columns(2)
+            with d1:
+              st.markdown("**Por Área y Rango de Atraso**")
+              tabla_det_area = pd.crosstab(
+                  df_det["AREA"],
+                  df_det["RANGO_ATRASO"],
+                  margins=True,
+                  margins_name="Total",
+              )
+              st.dataframe(tabla_det_area, use_container_width=True)
+
+            with d2:
+              st.markdown("**Por Estatus Exacto Pendiente**")
+              tabla_det_est = pd.crosstab(
+                  df_det["ESTATUS_PENDIENTE"],
+                  df_det["RANGO_ATRASO"],
+                  margins=True,
+                  margins_name="Total",
+              )
+              st.dataframe(tabla_det_est, use_container_width=True)
+
+            with st.expander(f"📋 Ver Folios Pendientes de {p_sel}"):
+              st.dataframe(
+                  df_det[[
+                      "FOLIO_GUIA",
+                      "MUNICIPIO_DESTINO",
+                      "CLIENTE",
+                      "AREA",
+                      "ESTATUS_PENDIENTE",
+                      "DIAS_ATRASO",
+                      "RANGO_ATRASO",
+                  ]],
+                  use_container_width=True,
+              )
 
     else:
-      buscar_cli = (
-          st.text_input(
-              "🔍 Buscar cliente (deja vacío para ver todos los principales):",
-              "",
-          )
-          .strip()
-          .upper()
-      )
-
-      tabla_cli = pd.crosstab(df_ac["CLIENTE"], df_ac["AREA"]).reindex(
-          columns=["OPERACIONES", "ADMINISTRACIÓN", "MESA DE CONTROL"],
-          fill_value=0,
-      )
-      tabla_cli["TOTAL"] = tabla_cli.sum(axis=1)
-      tabla_cli = tabla_cli.sort_values("TOTAL", ascending=False).drop(
-          columns=["TOTAL"]
-      )
-
+      buscar_cli = st.text_input("🔍 Buscar cliente:", "").strip().upper()
+      clientes_unicos = df_ac_f["CLIENTE"].value_counts().index.tolist()
       if buscar_cli:
-        tabla_cli = tabla_cli[
-            tabla_cli.index.str.contains(buscar_cli, na=False)
-        ]
+        clientes_unicos = [c for c in clientes_unicos if buscar_cli in c]
 
-      if tabla_cli.empty:
-        st.info("No se encontraron clientes con ese nombre.")
+      if not clientes_unicos:
+        st.info("No se encontraron clientes con ese criterio.")
       else:
         cols = st.columns(4)
-        for idx, cliente in enumerate(tabla_cli.index):
-          op_val = int(tabla_cli.loc[cliente, "OPERACIONES"])
-          adm_val = int(tabla_cli.loc[cliente, "ADMINISTRACIÓN"])
-          mc_val = int(tabla_cli.loc[cliente, "MESA DE CONTROL"])
+        for idx, cliente in enumerate(clientes_unicos):
+          sub_c = df_ac_f[df_ac_f["CLIENTE"] == cliente]
+          op_val = len(sub_c[sub_c["AREA"] == "OPERACIONES"])
+          adm_val = len(sub_c[sub_c["AREA"] == "ADMINISTRACIÓN"])
+          mc_val = len(sub_c[sub_c["AREA"] == "MESA DE CONTROL"])
+
+          r_1_5 = len(sub_c[sub_c["RANGO_ATRASO"] == "1 a 5 días"])
+          r_mas_5 = len(sub_c[sub_c["RANGO_ATRASO"] == "Más de 5 días"])
 
           with cols[idx % 4]:
             with st.container(border=True):
@@ -509,6 +511,34 @@ with tab_acuses:
               st.markdown(f"**{op_val:,}** operaciones")
               st.markdown(f"**{adm_val:,}** administración")
               st.markdown(f"**{mc_val:,}** mesa de control")
+              st.caption(
+                  f"🟡 1 a 5 días: **{r_1_5}** | 🔴 +5 días: **{r_mas_5}**"
+              )
+
+    st.markdown("---")
+    st.subheader("📈 Tabla de Avances por Plaza (Histórico de Cortes)")
+    if not df_hist_ac.empty:
+      df_hist_ac["CANTIDAD"] = pd.to_numeric(
+          df_hist_ac["CANTIDAD"], errors="coerce"
+      ).fillna(0)
+      tabla_avances_ac = (
+          df_hist_ac.pivot_table(
+              index="PLAZA",
+              columns="CORTE_TS",
+              values="CANTIDAD",
+              aggfunc="sum",
+              fill_value=0,
+          )
+          .reindex(PLAZAS_OFICIALES, fill_value=0)
+          .astype(int)
+      )
+      if tabla_avances_ac.shape[1] >= 2:
+        cortes_cols = list(tabla_avances_ac.columns)
+        tabla_avances_ac["VARIACIÓN ÚLTIMO CORTE"] = (
+            tabla_avances_ac[cortes_cols[-1]]
+            - tabla_avances_ac[cortes_cols[-2]]
+        )
+      st.dataframe(tabla_avances_ac, use_container_width=True)
 
 
 # =========================================================
@@ -527,10 +557,9 @@ with tab_arqueos:
         resumen_hist_ar, "ARQUEOS_HISTORIAL", "PLAZA", "CONDICION"
     )
 
-    # Filtros
     fa1, fa2, fa3, fa4 = st.columns(4)
     sel_plaza_ar = fa1.selectbox(
-        "Plaza:",
+        "Plaza (Columna F):",
         ["Todas"] + sorted(df_ar["PLAZA"].unique().tolist()),
         key="p_ar",
     )
@@ -556,7 +585,6 @@ with tab_arqueos:
     if sel_cond != "Todas":
       df_ar_f = df_ar_f[df_ar_f["CONDICION"] == sel_cond]
 
-    # 5 Tarjetas principales (sin promedios de días)
     tot_items = len(df_ar_f)
     vig_items = len(df_ar_f[df_ar_f["CONDICION"] == "Vigente"])
     ven_items = len(df_ar_f[df_ar_f["CONDICION"] == "Vencida"])
@@ -610,9 +638,12 @@ with tab_arqueos:
           color="MOVIMIENTO",
           barmode="stack",
           category_orders={"GRUPO_MOVIMIENTO": orden_grupos},
-          hover_data={"GRUPO_MOVIMIENTO": False, "MOVIMIENTO": True, "Ítems": True},
+          hover_data={
+              "GRUPO_MOVIMIENTO": False,
+              "MOVIMIENTO": True,
+              "Ítems": True,
+          },
       )
-      # Mostrar el total acumulado arriba de cada barra agrupada
       fig_mov.add_scatter(
           x=totales_grupo["GRUPO_MOVIMIENTO"],
           y=totales_grupo["Ítems"],
@@ -626,21 +657,54 @@ with tab_arqueos:
       fig_mov.update_yaxes(range=[0, max_y * 1.15])
       st.plotly_chart(fig_mov, use_container_width=True)
 
-    # Evolución histórica Arqueos
+    st.markdown("---")
+    st.subheader("📊 Evolución de Carga por Corte (Vigente vs. Vencida)")
     if not df_hist_ar.empty:
-      st.subheader("📈 Evolución de Carga Vencida por Plaza")
       df_hist_ar["CANTIDAD"] = pd.to_numeric(
           df_hist_ar["CANTIDAD"], errors="coerce"
       ).fillna(0)
-      hist_v = df_hist_ar[df_hist_ar["CONDICION"] == "Vencida"]
+
+      hist_filtrado = df_hist_ar.copy()
       if sel_plaza_ar != "Todas":
-        hist_v = hist_v[hist_v["PLAZA"] == sel_plaza_ar]
-      fig_ev_ar = px.line(
-          hist_v,
+        hist_filtrado = hist_filtrado[hist_filtrado["PLAZA"] == sel_plaza_ar]
+
+      resumen_cortes = (
+          hist_filtrado.groupby(["CORTE_TS", "CONDICION"])["CANTIDAD"]
+          .sum()
+          .reset_index()
+      )
+
+      fig_ev_simple = px.bar(
+          resumen_cortes,
           x="CORTE_TS",
           y="CANTIDAD",
-          color="PLAZA",
-          markers=True,
-          labels={"CORTE_TS": "Corte", "CANTIDAD": "Ítems Vencidos"},
+          color="CONDICION",
+          barmode="group",
+          color_discrete_map={"Vigente": "#00CC96", "Vencida": "#EF553B"},
+          text_auto=True,
+          labels={
+              "CORTE_TS": "Fecha / Hora del Corte",
+              "CANTIDAD": "Total Ítems",
+              "CONDICION": "Condición",
+          },
       )
-      st.plotly_chart(fig_ev_ar, use_container_width=True)
+      st.plotly_chart(fig_ev_simple, use_container_width=True)
+
+      with st.expander("📋 Ver Tabla de Avances de Carga Vencida por Plaza"):
+        tabla_av_ar = (
+            df_hist_ar[df_hist_ar["CONDICION"] == "Vencida"]
+            .pivot_table(
+                index="PLAZA",
+                columns="CORTE_TS",
+                values="CANTIDAD",
+                aggfunc="sum",
+                fill_value=0,
+            )
+            .astype(int)
+        )
+        if tabla_av_ar.shape[1] >= 2:
+          cols_ar_c = list(tabla_av_ar.columns)
+          tabla_av_ar["VARIACIÓN ÚLTIMO CORTE"] = (
+              tabla_av_ar[cols_ar_c[-1]] - tabla_av_ar[cols_ar_c[-2]]
+          )
+        st.dataframe(tabla_av_ar, use_container_width=True)
