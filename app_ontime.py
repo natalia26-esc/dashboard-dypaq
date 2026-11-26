@@ -33,6 +33,17 @@ def obtener_tiempo_mexico():
   return ahora.strftime("%Y-%m-%d %H:%M"), ahora.strftime("%Y-%m-%d")
 
 
+def normalizar_plaza(serie):
+  s = (
+      serie.astype(str)
+      .str.strip()
+      .str.upper()
+      .replace({"": "SIN PLAZA", "NAN": "SIN PLAZA", "--": "SIN PLAZA"})
+  )
+  # Unificar UMAN y MERIDA
+  return s.replace({"UMAN": "MERIDA", "UMÁN": "MERIDA", "MÉRIDA": "MERIDA"})
+
+
 @st.cache_data(ttl=60)
 def leer_hoja_raw(nombre_pestana):
   try:
@@ -42,19 +53,16 @@ def leer_hoja_raw(nombre_pestana):
     if not valores or len(valores) < 2:
       return pd.DataFrame()
     headers = [str(h).strip() for h in valores[0]]
-    df = pd.DataFrame(valores[1:], columns=headers)
-    return df
+    return pd.DataFrame(valores[1:], columns=headers)
   except Exception as e:
     st.error(f"Error al leer la pestaña '{nombre_pestana}': {e}")
     return pd.DataFrame()
 
 
-def registrar_historial_si_cambio(df_actual_agrupado, nombre_historial, col_estado):
-  """Compara el corte actual contra el último registro guardado en el historial.
-
-  Si los números cambiaron (porque actualizaste la Google Sheet), guarda una
-  nueva foto automáticamente.
-  """
+def registrar_historial_si_cambio(
+    df_actual_agrupado, nombre_historial, col_estado
+):
+  """Guarda automáticamente una foto en el historial si cambian los totales por plaza."""
   if df_actual_agrupado.empty:
     return leer_hoja_raw(nombre_historial)
 
@@ -78,7 +86,6 @@ def registrar_historial_si_cambio(df_actual_agrupado, nombre_historial, col_esta
     ultimo_corte = df_hist["CORTE_TS"].iloc[-1]
     df_ultimo = df_hist[df_hist["CORTE_TS"] == ultimo_corte]
 
-    # Verificar si hubo cambio real en los totales por plaza/estado
     firma_anterior = sorted(
         zip(
             df_ultimo["PLAZA"],
@@ -104,20 +111,24 @@ def registrar_historial_si_cambio(df_actual_agrupado, nombre_historial, col_esta
 
 
 # ---------------------------------------------------------
-# PROCESAMIENTO DE ACUSES (Desde pestaña ACUSES)
+# PROCESAMIENTO DE ACUSES (SOLO PENDIENTES CON FECHA ENTREGA)
 # ---------------------------------------------------------
 @st.cache_data(ttl=60)
-def obtener_datos_acuses():
+def obtener_acuses_pendientes():
   df = leer_hoja_raw("ACUSES")
   if df.empty:
     return pd.DataFrame()
 
   cols = list(df.columns)
   col_folio = "FOLIO_GUIA" if "FOLIO_GUIA" in cols else cols[1]
+  col_est_guia = "ESTATUS" if "ESTATUS" in cols else cols[3]
   col_cliente = "CLIENTE" if "CLIENTE" in cols else cols[5]
+  col_f_doc = (
+      "Fecha Documentacion" if "Fecha Documentacion" in cols else cols[10]
+  )
+  col_f_ent = "Fecha Entrega" if "Fecha Entrega" in cols else cols[11]
   col_plaza = "Destino" if "Destino" in cols else cols[14]
   col_obs = "OBSERVACIONES" if "OBSERVACIONES" in cols else cols[20]
-  col_f_ent = "Fecha Entrega" if "Fecha Entrega" in cols else cols[11]
 
   estatus_cols = [
       "LIQUIDAR_RUTA",
@@ -130,52 +141,64 @@ def obtener_datos_acuses():
   ]
   estatus_cols = [c for c in estatus_cols if c in cols]
 
-  plaza_s = (
-      df[col_plaza]
-      .astype(str)
-      .str.strip()
-      .str.upper()
-      .replace({"": "SIN PLAZA", "NAN": "SIN PLAZA", "--": "SIN PLAZA"})
-  )
+  # 1. Filtrar terminados (CONTRARECIBO en OBSERVACIONES) y cancelados (ESTATUS == X)
   obs_s = df[col_obs].astype(str).str.strip().str.upper()
-  cliente_s = (
-      df[col_cliente]
+  est_guia_s = df[col_est_guia].astype(str).str.strip().str.upper()
+  f_entrega_s = pd.to_datetime(df[col_f_ent], errors="coerce")
+  f_doc_s = pd.to_datetime(df[col_f_doc], errors="coerce")
+
+  # El primer estatus (LIQUIDAR_RUTA) parte de la Fecha de Entrega de la guía.
+  # Si no tiene Fecha de Entrega, aún no entra al flujo de acuses.
+  mask_pendiente = (
+      (~obs_s.str.contains("CONTRARECIBO", na=False))
+      & (est_guia_s != "X")
+      & (~f_entrega_s.isna())
+  )
+
+  df_p = df[mask_pendiente].copy()
+  if df_p.empty:
+    return pd.DataFrame()
+
+  f_ent_p = f_entrega_s[mask_pendiente]
+  f_doc_p = f_doc_s[mask_pendiente]
+  plaza_p = normalizar_plaza(df_p[col_plaza])
+  cliente_p = (
+      df_p[col_cliente]
       .astype(str)
       .str.strip()
       .str.upper()
       .replace({"": "SIN CLIENTE", "NAN": "SIN CLIENTE"})
   )
 
-  estado_flujo = obs_s.apply(
-      lambda x: "Terminado" if "CONTRARECIBO" in x else "Pendiente"
-  )
-  hoy = pd.to_datetime((datetime.utcnow() - timedelta(hours=6)).date())
+  # Evaluar fechas válidas en V:AB (ignorar '--' o vacíos)
+  fechas_pasos = {}
+  for c in estatus_cols:
+    val_clean = (
+        df_p[c]
+        .astype(str)
+        .str.strip()
+        .replace({"--": "", "nan": "", "None": ""})
+    )
+    fechas_pasos[c] = pd.to_datetime(val_clean, errors="coerce", dayfirst=True)
 
-  fechas_pasos = {
-      c: pd.to_datetime(df[c], errors="coerce", dayfirst=True)
-      for c in estatus_cols
-  }
-  f_entrega_s = pd.to_datetime(df[col_f_ent], errors="coerce")
+  hoy = pd.to_datetime((datetime.utcnow() - timedelta(hours=6)).date())
 
   estatus_actual_list = []
   area_resp_list = []
   dias_atraso_list = []
+  anio_doc_list = []
 
-  for idx in range(len(df)):
-    if estado_flujo.iloc[idx] == "Terminado":
-      estatus_actual_list.append("CONTRARECIBO")
-      area_resp_list.append("MESA DE CONTROL")
-      dias_atraso_list.append(0)
-      continue
-
+  for idx in range(len(df_p)):
     ultimo_idx = -1
     ultima_fecha = pd.NaT
+
     for p_idx, c in enumerate(estatus_cols):
       val_f = fechas_pasos[c].iloc[idx]
       if not pd.isna(val_f):
         ultimo_idx = p_idx
         ultima_fecha = val_f
 
+    # Si el estatus tiene fecha es porque ya se hizo -> pasa al siguiente estatus y área
     paso_pend_idx = min(ultimo_idx + 1, len(estatus_cols) - 1)
     nombre_paso = estatus_cols[paso_pend_idx] if estatus_cols else "SIN ESTATUS"
 
@@ -186,33 +209,36 @@ def obtener_datos_acuses():
     else:
       area = "MESA DE CONTROL"
 
-    ref_fecha = (
-        ultima_fecha if not pd.isna(ultima_fecha) else f_entrega_s.iloc[idx]
-    )
+    # Si no tiene ninguna fecha en V:AB, parte de la Fecha de Entrega de la guía
+    ref_fecha = ultima_fecha if not pd.isna(ultima_fecha) else f_ent_p.iloc[idx]
     atraso = (
         max(0, int((hoy - ref_fecha.normalize()).days))
         if not pd.isna(ref_fecha)
         else 0
     )
 
+    fd = f_doc_p.iloc[idx]
+    anio_doc = str(fd.year) if not pd.isna(fd) else "SIN FECHA"
+
     estatus_actual_list.append(nombre_paso)
     area_resp_list.append(area)
     dias_atraso_list.append(atraso)
+    anio_doc_list.append(anio_doc)
 
   return pd.DataFrame({
-      "FOLIO_GUIA": df[col_folio].astype(str),
-      "PLAZA": plaza_s,
-      "CLIENTE": cliente_s,
-      "OBSERVACIONES": obs_s,
-      "ESTADO_FLUJO": estado_flujo,
-      "ESTATUS_ACTUAL": estatus_actual_list,
+      "FOLIO_GUIA": df_p[col_folio].astype(str),
+      "PLAZA": plaza_p.values,
+      "CLIENTE": cliente_p.values,
+      "FECHA_ENTREGA": f_ent_p.dt.strftime("%Y-%m-%d").values,
+      "ANIO_DOC": anio_doc_list,
+      "ESTATUS_PENDIENTE": estatus_actual_list,
       "AREA_RESPONSABLE": area_resp_list,
       "DIAS_ATRASO": dias_atraso_list,
   })
 
 
 # ---------------------------------------------------------
-# PROCESAMIENTO DE ARQUEOS (Desde pestaña ARQUEOS)
+# PROCESAMIENTO DE ARQUEOS (UMAN + MERIDA UNIFICADOS)
 # ---------------------------------------------------------
 @st.cache_data(ttl=60)
 def obtener_datos_arqueos():
@@ -235,13 +261,7 @@ def obtener_datos_arqueos():
   df_out = pd.DataFrame()
   df_out["CIP"] = df[col_cip].astype(str).str.strip()
   df_out["GUIA"] = df[col_guia].astype(str).str.strip()
-  df_out["PLAZA"] = (
-      df[col_plaza]
-      .astype(str)
-      .str.strip()
-      .str.upper()
-      .replace({"": "SIN PLAZA", "NAN": "SIN PLAZA"})
-  )
+  df_out["PLAZA"] = normalizar_plaza(df[col_plaza])
   df_out["MOVIMIENTO"] = (
       df[col_mov]
       .astype(str)
@@ -288,7 +308,7 @@ def obtener_datos_arqueos():
 
 
 # ---------------------------------------------------------
-# INTERFAZ EJECUTIVA PARA DIRECTIVOS
+# ENCABEZADO EJECUTIVO
 # ---------------------------------------------------------
 col_t1, col_t2 = st.columns([5, 1])
 col_t1.title("📊 Tablero Ejecutivo - Acuses y Arqueos")
@@ -297,164 +317,191 @@ if col_t2.button("🔄 Actualizar Datos", use_container_width=True):
   st.rerun()
 
 tab_acuses, tab_arqueos = st.tabs(
-    ["📄 Control y Flujo de Acuses", "📦 Arqueos y Carga en Plaza"]
+    ["📄 Acuses Pendientes por Plaza", "📦 Arqueos y Carga en Plaza"]
 )
 
 # =========================================================
-# PESTAÑA 1: ACUSES
+# PESTAÑA 1: ACUSES PENDIENTES (CON TARJETAS POR PLAZA)
 # =========================================================
 with tab_acuses:
-  df_ac = obtener_datos_acuses()
+  df_ac = obtener_acuses_pendientes()
 
   if df_ac.empty:
-    st.warning(
-        "La pestaña 'ACUSES' en Google Sheets está vacía. Pega ahí los datos de"
-        " tu reporte para comenzar."
-    )
+    st.warning("No hay acuses pendientes registrados en la pestaña 'ACUSES'.")
   else:
-    # Guardar avance automático en ACUSES_HISTORIAL si hubo cambios en la Google Sheet
+    # Filtro opcional de año de documentación para aislar rezagos históricos de años anteriores
+    anios_disp = sorted(df_ac["ANIO_DOC"].unique().tolist(), reverse=True)
+    default_anio = "2026" if "2026" in anios_disp else anios_disp[0]
+
+    col_top1, col_top2 = st.columns([2, 4])
+    sel_anio = col_top1.selectbox(
+        "Periodo de Documentación:",
+        ["Todos"] + anios_disp,
+        index=(["Todos"] + anios_disp).index(default_anio),
+    )
+
+    df_ac_periodo = (
+        df_ac if sel_anio == "Todos" else df_ac[df_ac["ANIO_DOC"] == sel_anio]
+    )
+
+    # Registrar evolución histórica de pendientes por plaza
     resumen_hist_ac = (
-        df_ac.groupby(["PLAZA", "ESTADO_FLUJO"])
+        df_ac_periodo.groupby(["PLAZA", "AREA_RESPONSABLE"])
         .size()
         .reset_index(name="CANTIDAD")
     )
     df_hist_ac = registrar_historial_si_cambio(
-        resumen_hist_ac, "ACUSES_HISTORIAL", "ESTADO_FLUJO"
+        resumen_hist_ac, "ACUSES_HISTORIAL", "AREA_RESPONSABLE"
     )
 
-    # Filtros
-    f1, f2, f3 = st.columns(3)
-    sel_plaza_ac = f1.selectbox(
-        "Plaza Responsable:",
-        ["Todas"] + sorted(df_ac["PLAZA"].unique().tolist()),
-        key="p_ac",
-    )
-    sel_estado_ac = f2.selectbox(
-        "Estado del Flujo:",
-        ["Todos", "Pendiente", "Terminado"],
-        key="e_ac",
-    )
-    sel_area_ac = f3.selectbox(
-        "Área Responsable:",
-        ["Todas", "OPERACIONES", "ADMINISTRACIÓN", "MESA DE CONTROL"],
-        key="a_ac",
+    if "plaza_seleccionada" not in st.session_state:
+      st.session_state.plaza_seleccionada = "TODAS"
+
+    # Tarjetas interactivas de Totales por Plaza
+    st.subheader(
+        "🏢 Acuses Pendientes por Plaza (Haz clic en una plaza para ver su"
+        " detalle por área)"
     )
 
-    df_ac_f = df_ac.copy()
-    if sel_plaza_ac != "Todas":
-      df_ac_f = df_ac_f[df_ac_f["PLAZA"] == sel_plaza_ac]
-    if sel_estado_ac != "Todos":
-      df_ac_f = df_ac_f[df_ac_f["ESTADO_FLUJO"] == sel_estado_ac]
-    if sel_area_ac != "Todas":
-      df_ac_f = df_ac_f[df_ac_f["AREA_RESPONSABLE"] == sel_area_ac]
-
-    # KPIs
-    total_ac = len(df_ac_f)
-    pend_df = df_ac_f[df_ac_f["ESTADO_FLUJO"] == "Pendiente"]
-    pend_ac = len(pend_df)
-    term_ac = len(df_ac_f[df_ac_f["ESTADO_FLUJO"] == "Terminado"])
-    prom_atraso = pend_df["DIAS_ATRASO"].mean() if pend_ac > 0 else 0
-
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Total Acuses", f"{total_ac:,}")
-    k2.metric(
-        "⏳ Pendientes de Flujo",
-        f"{pend_ac:,}",
-        delta=f"{(pend_ac/total_ac*100):.1f}%" if total_ac else "0%",
-        delta_color="inverse",
+    conteo_plazas = (
+        df_ac_periodo["PLAZA"].value_counts().reset_index()
     )
-    k3.metric("✅ Terminados (Contrarecibo)", f"{term_ac:,}")
-    k4.metric("📅 Promedio Días Atraso (Pendientes)", f"{prom_atraso:.1f} días")
+    conteo_plazas.columns = ["PLAZA", "PENDIENTES"]
+
+    # Construir cuadrícula de tarjetas (Tarjeta "TODAS" + Top Plazas)
+    tarjetas = [
+        {"PLAZA": "TODAS", "PENDIENTES": len(df_ac_periodo)}
+    ] + conteo_plazas.to_dict(orient="records")
+
+    cols_por_fila = 5
+    for i in range(0, len(tarjetas), cols_por_fila):
+      fila_tarjetas = tarjetas[i : i + cols_por_fila]
+      cols = st.columns(cols_por_fila)
+      for idx_c, item in enumerate(fila_tarjetas):
+        plaza_nombre = item["PLAZA"]
+        cant = item["PENDIENTES"]
+        es_activa = st.session_state.plaza_seleccionada == plaza_nombre
+        etiqueta_btn = (
+            f"{'🔵 ' if es_activa else '📍 '}{plaza_nombre}\n\n**{cant:,}**"
+            " pendientes"
+        )
+        if cols[idx_c].button(
+            etiqueta_btn,
+            key=f"btn_plaza_{plaza_nombre}",
+            use_container_width=True,
+            type="primary" if es_activa else "secondary",
+        ):
+          st.session_state.plaza_seleccionada = plaza_nombre
+          st.rerun()
 
     st.markdown("---")
 
-    # Gráficas Fila 1
+    # Filtrar según la tarjeta de plaza seleccionada
+    plaza_act = st.session_state.plaza_seleccionada
+    df_vista = (
+        df_ac_periodo
+        if plaza_act == "TODAS"
+        else df_ac_periodo[df_ac_periodo["PLAZA"] == plaza_act]
+    )
+
+    st.subheader(
+        f"📌 Responsabilidad por Área y Estatus — Plaza: {plaza_act}"
+        f" ({len(df_vista):,} pendientes)"
+    )
+
+    # Tarjetas rápidas por Área Responsable de la plaza seleccionada
+    a1, a2, a3 = st.columns(3)
+    cnt_op = len(df_vista[df_vista["AREA_RESPONSABLE"] == "OPERACIONES"])
+    cnt_adm = len(df_vista[df_vista["AREA_RESPONSABLE"] == "ADMINISTRACIÓN"])
+    cnt_mc = len(df_vista[df_vista["AREA_RESPONSABLE"] == "MESA DE CONTROL"])
+
+    a1.metric("🚛 OPERACIONES", f"{cnt_op:,} pendientes")
+    a2.metric("🗂️ ADMINISTRACIÓN", f"{cnt_adm:,} pendientes")
+    a3.metric("🖥️ MESA DE CONTROL", f"{cnt_mc:,} pendientes")
+
     g1, g2 = st.columns(2)
     with g1:
-      st.subheader("Acuses por Plaza Responsable")
-      grp_plaza = (
-          df_ac_f.groupby(["PLAZA", "ESTADO_FLUJO"])
-          .size()
-          .reset_index(name="Cantidad")
-      )
-      fig_plaza = px.bar(
-          grp_plaza,
-          x="PLAZA",
-          y="Cantidad",
-          color="ESTADO_FLUJO",
-          barmode="stack",
-          color_discrete_map={"Pendiente": "#EF553B", "Terminado": "#00CC96"},
-          text_auto=True,
-      )
-      st.plotly_chart(fig_plaza, use_container_width=True)
-
-    with g2:
-      st.subheader("Responsabilidad por Área y Estatus (Pendientes)")
-      if pend_ac > 0:
+      st.markdown("**Desglose por Área y Estatus Pendiente**")
+      if not df_vista.empty:
         grp_area = (
-            pend_df.groupby(["AREA_RESPONSABLE", "ESTATUS_ACTUAL"])
+            df_vista.groupby(["AREA_RESPONSABLE", "ESTATUS_PENDIENTE"])
             .size()
-            .reset_index(name="Cantidad")
+            .reset_index(name="Pendientes")
         )
         fig_area = px.bar(
             grp_area,
             x="AREA_RESPONSABLE",
-            y="Cantidad",
-            color="ESTATUS_ACTUAL",
+            y="Pendientes",
+            color="ESTATUS_PENDIENTE",
             text_auto=True,
         )
         st.plotly_chart(fig_area, use_container_width=True)
       else:
-        st.success("Sin acuses pendientes en esta selección.")
+        st.success("Sin acuses pendientes en esta plaza.")
 
-    # Gráficas Fila 2
-    g3, g4 = st.columns(2)
-    with g3:
-      st.subheader("Principales Clientes y 'Otros'")
-      top_cli = df_ac_f["CLIENTE"].value_counts().head(10).index
-      df_ac_f["CLIENTE_GRUPO"] = df_ac_f["CLIENTE"].apply(
-          lambda x: x if x in top_cli else "OTROS"
-      )
-      grp_cli = df_ac_f["CLIENTE_GRUPO"].value_counts().reset_index()
-      grp_cli.columns = ["Cliente", "Cantidad"]
-      fig_cli = px.pie(grp_cli, names="Cliente", values="Cantidad", hole=0.4)
-      st.plotly_chart(fig_cli, use_container_width=True)
+    with g2:
+      st.markdown("**Principales Clientes con Pendientes y 'Otros'**")
+      if not df_vista.empty:
+        top_cli = df_vista["CLIENTE"].value_counts().head(10).index
+        df_vista = df_vista.copy()
+        df_vista["CLIENTE_GRUPO"] = df_vista["CLIENTE"].apply(
+            lambda x: x if x in top_cli else "OTROS"
+        )
+        grp_cli = df_vista["CLIENTE_GRUPO"].value_counts().reset_index()
+        grp_cli.columns = ["Cliente", "Pendientes"]
+        fig_cli = px.pie(grp_cli, names="Cliente", values="Pendientes", hole=0.4)
+        st.plotly_chart(fig_cli, use_container_width=True)
 
-    with g4:
-      st.subheader("📈 Evolución de Pendientes por Plaza")
-      if not df_hist_ac.empty:
-        df_hist_ac["CANTIDAD"] = pd.to_numeric(
-            df_hist_ac["CANTIDAD"], errors="coerce"
-        ).fillna(0)
-        hist_p = df_hist_ac[df_hist_ac["ESTADO_FLUJO"] == "Pendiente"]
-        if sel_plaza_ac != "Todas":
-          hist_p = hist_p[hist_p["PLAZA"] == sel_plaza_ac]
+    # Evolución histórica de pendientes
+    st.subheader(f"📈 Evolución de Pendientes ({plaza_act})")
+    if not df_hist_ac.empty:
+      df_hist_ac["CANTIDAD"] = pd.to_numeric(
+          df_hist_ac["CANTIDAD"], errors="coerce"
+      ).fillna(0)
+      if plaza_act != "TODAS":
+        hist_plot = (
+            df_hist_ac[df_hist_ac["PLAZA"] == plaza_act]
+            .groupby(["CORTE_TS", "AREA_RESPONSABLE"])["CANTIDAD"]
+            .sum()
+            .reset_index()
+        )
         fig_ev_ac = px.line(
-            hist_p,
+            hist_plot,
             x="CORTE_TS",
             y="CANTIDAD",
-            color="PLAZA",
+            color="AREA_RESPONSABLE",
             markers=True,
             labels={"CORTE_TS": "Corte", "CANTIDAD": "Pendientes"},
         )
-        st.plotly_chart(fig_ev_ac, use_container_width=True)
+      else:
+        hist_plot = (
+            df_hist_ac.groupby(["CORTE_TS", "AREA_RESPONSABLE"])["CANTIDAD"]
+            .sum()
+            .reset_index()
+        )
+        fig_ev_ac = px.line(
+            hist_plot,
+            x="CORTE_TS",
+            y="CANTIDAD",
+            color="AREA_RESPONSABLE",
+            markers=True,
+            labels={"CORTE_TS": "Corte", "CANTIDAD": "Pendientes"},
+        )
+      st.plotly_chart(fig_ev_ac, use_container_width=True)
 
-    with st.expander("📋 Ver Detalle de Acuses Pendientes"):
-      st.dataframe(pend_df, use_container_width=True)
+    with st.expander(f"📋 Ver Listado de Guías Pendientes ({plaza_act})"):
+      st.dataframe(df_vista, use_container_width=True)
+
 
 # =========================================================
-# PESTAÑA 2: ARQUEOS
+# PESTAÑA 2: ARQUEOS (CON UMAN Y MERIDA UNIFICADOS)
 # =========================================================
 with tab_arqueos:
   df_ar = obtener_datos_arqueos()
 
   if df_ar.empty:
-    st.warning(
-        "La pestaña 'ARQUEOS' en Google Sheets está vacía. Pega ahí los datos"
-        " de tu reporte para comenzar."
-    )
+    st.warning("La pestaña 'ARQUEOS' en Google Sheets está vacía.")
   else:
-    # Guardar avance automático en ARQUEOS_HISTORIAL si hubo cambios en la Google Sheet
     resumen_hist_ar = (
         df_ar.groupby(["PLAZA", "CONDICION"]).size().reset_index(name="CANTIDAD")
     )
@@ -462,7 +509,6 @@ with tab_arqueos:
         resumen_hist_ar, "ARQUEOS_HISTORIAL", "CONDICION"
     )
 
-    # Filtros
     fa1, fa2, fa3, fa4 = st.columns(4)
     sel_plaza_ar = fa1.selectbox(
         "Plaza:",
@@ -491,7 +537,6 @@ with tab_arqueos:
     if sel_cond != "Todas":
       df_ar_f = df_ar_f[df_ar_f["CONDICION"] == sel_cond]
 
-    # KPIs
     tot_items = len(df_ar_f)
     vig_items = len(df_ar_f[df_ar_f["CONDICION"] == "Vigente"])
     ven_items = len(df_ar_f[df_ar_f["CONDICION"] == "Vencida"])
