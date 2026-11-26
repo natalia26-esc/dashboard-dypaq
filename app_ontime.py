@@ -119,6 +119,7 @@ def unificar_plaza_acuses(estado_col_p, destino_col_o):
   edo = str(estado_col_p).strip().upper()
   dest = str(destino_col_o).strip().upper()
 
+  # 1. Excepciones específicas por municipio/destino
   if dest == "METEPEC":
     return "PUEBLA"
   if dest in ["LEON", "LEÓN", "SILAO", "PUERTO RICO"]:
@@ -133,6 +134,7 @@ def unificar_plaza_acuses(estado_col_p, destino_col_o):
   if dest in ["FELIPE CARRILLO PUERTO", "CHETUMAL"]:
     return "MERIDA"
 
+  # 2. Agrupación por Estado Destino (Columna P)
   if "QUINTANA" in edo:
     return "CANCUN"
   if "YUCATAN" in edo or "YUCATÁN" in edo:
@@ -248,7 +250,7 @@ def obtener_datos_acuses():
         if not pd.isna(ref_fecha)
         else 0
     )
-    rango = "1 a 5 días" if dias <= 5 else "Más de 5 días"
+    rango = "0 a 5 días" if dias <= 5 else "Más de 5 días"
 
     areas_list.append(area)
     estatus_pend_list.append(nombre_paso)
@@ -303,7 +305,6 @@ def obtener_datos_arqueos():
   col_tipo_ent = "Tipo Entrega" if "Tipo Entrega" in cols else cols[33]
   col_inc = "Incidencia" if "Incidencia" in cols else cols[35]
 
-  # Excluir registros con Fecha Promesa anterior al 01/01/2025
   f_prom_s = pd.to_datetime(df[col_f_promesa], errors="coerce", dayfirst=True)
   df = df[f_prom_s.isna() | (f_prom_s >= pd.Timestamp("2025-01-01"))].copy()
   if df.empty:
@@ -432,7 +433,7 @@ with tab_acuses:
     )
     filtro_rango = col_v2.radio(
         "Intervalo de atraso:",
-        ["Todos", "1 a 5 días", "Más de 5 días"],
+        ["Todos", "0 a 5 días", "Más de 5 días"],
         horizontal=True,
     )
 
@@ -457,7 +458,7 @@ with tab_acuses:
         adm_val = len(sub_p[sub_p["AREA"] == "ADMINISTRACIÓN"])
         mc_val = len(sub_p[sub_p["AREA"] == "MESA DE CONTROL"])
 
-        r_1_5 = len(sub_p[sub_p["RANGO_ATRASO"] == "1 a 5 días"])
+        r_0_5 = len(sub_p[sub_p["RANGO_ATRASO"] == "0 a 5 días"])
         r_mas_5 = len(sub_p[sub_p["RANGO_ATRASO"] == "Más de 5 días"])
 
         with cols[idx % 5]:
@@ -475,7 +476,7 @@ with tab_acuses:
             st.markdown(f"**{op_val:,}** operaciones")
             st.markdown(f"**{adm_val:,}** administración")
             st.markdown(f"**{mc_val:,}** mesa de control")
-            st.caption(f"🟡 1 a 5 días: **{r_1_5}** | 🔴 +5 días: **{r_mas_5}**")
+            st.caption(f"🟡 0 a 5 días: **{r_0_5}** | 🔴 +5 días: **{r_mas_5}**")
 
       if st.session_state.plaza_desglose:
         p_sel = st.session_state.plaza_desglose
@@ -542,7 +543,7 @@ with tab_acuses:
           adm_val = len(sub_c[sub_c["AREA"] == "ADMINISTRACIÓN"])
           mc_val = len(sub_c[sub_c["AREA"] == "MESA DE CONTROL"])
 
-          r_1_5 = len(sub_c[sub_c["RANGO_ATRASO"] == "1 a 5 días"])
+          r_0_5 = len(sub_c[sub_c["RANGO_ATRASO"] == "0 a 5 días"])
           r_mas_5 = len(sub_c[sub_c["RANGO_ATRASO"] == "Más de 5 días"])
 
           with cols[idx % 4]:
@@ -552,7 +553,7 @@ with tab_acuses:
               st.markdown(f"**{adm_val:,}** administración")
               st.markdown(f"**{mc_val:,}** mesa de control")
               st.caption(
-                  f"🟡 1 a 5 días: **{r_1_5}** | 🔴 +5 días: **{r_mas_5}**"
+                  f"🟡 0 a 5 días: **{r_0_5}** | 🔴 +5 días: **{r_mas_5}**"
               )
 
     st.markdown("---")
@@ -640,7 +641,6 @@ with tab_arqueos:
 
     st.markdown("---")
 
-    # GRÁFICA PRINCIPAL: POR PLAZA (SI ES "Todas") O POR GRUPO DE MOVIMIENTO (SI HAY PLAZA)
     orden_grupos = ["Circuitos", "Rutas", "Inventario", "Otros Movimientos"]
 
     if sel_plaza_ar == "Todas":
@@ -698,7 +698,6 @@ with tab_arqueos:
           key="chart_ar_plazas",
       )
 
-      # Detectar clic en barra
       puntos = []
       if evento_grafica and isinstance(evento_grafica, dict):
         puntos = evento_grafica.get("selection", {}).get("points", [])
