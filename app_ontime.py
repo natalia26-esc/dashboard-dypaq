@@ -84,6 +84,67 @@ def leer_hoja_raw(nombre_pestana):
     return pd.DataFrame()
 
 
+def mostrar_tabla_filtrable(
+    df, key_prefix, cols_filtro=None, hide_index=True, column_config=None
+):
+  """Muestra una tabla con buscador rápido y filtros por columna."""
+  if df.empty:
+    st.info("Sin registros para mostrar.")
+    return df
+
+  df_work = df.copy()
+  cols_validas = [c for c in (cols_filtro or []) if c in df_work.columns]
+
+  n_cols = 1 + len(cols_validas)
+  ui_cols = st.columns([2] + [1.5] * len(cols_validas))
+
+  txt_busqueda = (
+      ui_cols[0]
+      .text_input(
+          "🔍 Filtrar tabla (texto):",
+          "",
+          key=f"{key_prefix}_txt",
+          placeholder="Buscar folio, guía, cliente...",
+      )
+      .strip()
+      .upper()
+  )
+
+  for idx, col_name in enumerate(cols_validas):
+    opciones = sorted(
+        [
+            str(v)
+            for v in df_work[col_name].dropna().unique().tolist()
+            if str(v).strip() != ""
+        ]
+    )
+    seleccion = ui_cols[idx + 1].multiselect(
+        f"Filtrar {col_name}:",
+        options=opciones,
+        default=[],
+        key=f"{key_prefix}_col_{col_name}",
+        placeholder="Todos",
+    )
+    if seleccion:
+      df_work = df_work[df_work[col_name].astype(str).isin(seleccion)]
+
+  if txt_busqueda:
+    mask_txt = df_work.apply(
+        lambda col: col.astype(str)
+        .str.upper()
+        .str.contains(txt_busqueda, na=False)
+    ).any(axis=1)
+    df_work = df_work[mask_txt]
+
+  st.dataframe(
+      df_work,
+      use_container_width=True,
+      hide_index=hide_index,
+      column_config=column_config,
+  )
+  return df_work
+
+
 def registrar_historial_si_cambio(
     df_actual_agrupado, nombre_historial, col_grupo, col_subgrupo
 ):
@@ -225,7 +286,6 @@ def unificar_plaza_acuses(estado_col_p, destino_col_o):
   edo = str(estado_col_p).strip().upper()
   dest = str(destino_col_o).strip().upper()
 
-  # 1. Excepciones específicas por destino/municipio
   if (
       dest in ["METEPEC", "TULTEPEC", "PARQUE INDUSTRIAL TOLUCA 2000"]
       or "TOLUCA 2000" in dest
@@ -238,7 +298,6 @@ def unificar_plaza_acuses(estado_col_p, destino_col_o):
   if dest in ["FELIPE CARRILLO PUERTO", "CHETUMAL"]:
     return "MERIDA"
 
-  # 2. Agrupación por Estado Destino (Columna P)
   if "QUINTANA" in edo:
     return "CANCUN"
   if "YUCATAN" in edo or "YUCATÁN" in edo:
@@ -258,7 +317,6 @@ def unificar_plaza_acuses(estado_col_p, destino_col_o):
   if "GUANAJUATO" in edo:
     return "GUANAJUATO"
 
-  # Estado de México, CDMX, D.F., etc.
   return "ESTADO DE MEXICO"
 
 
@@ -546,7 +604,7 @@ with tab_acuses:
     )
 
     # -----------------------------------------------------
-    # NUEVO: RESUMEN ESTRUCTURADO INICIAL DE ACUSES
+    # RESUMEN ESTRUCTURADO INICIAL DE ACUSES (FILTRABLE)
     # -----------------------------------------------------
     total_acuses_global = len(df_ac)
     st.markdown(f"### 📋 TOTAL ACUSES = `{total_acuses_global:,}`")
@@ -578,15 +636,16 @@ with tab_acuses:
         [df_resumen_top_ac, fila_total_ac], ignore_index=True
     )
 
-    st.dataframe(
+    mostrar_tabla_filtrable(
         df_resumen_top_ac,
-        use_container_width=True,
+        key_prefix="tbl_resumen_ac",
+        cols_filtro=["Plaza"],
         hide_index=True,
     )
     st.markdown("---")
 
     # -----------------------------------------------------
-    # VISTA DE TARJETAS POR PLAZA O CLIENTE (EXISTENTE)
+    # VISTA DE TARJETAS POR PLAZA O CLIENTE
     # -----------------------------------------------------
     col_v1, col_v2 = st.columns([2, 2])
     vista_ac = col_v1.radio(
@@ -677,7 +736,7 @@ with tab_acuses:
               st.dataframe(tabla_det_est, use_container_width=True)
 
             with st.expander(f"📋 Ver Folios Pendientes de {p_sel}"):
-              st.dataframe(
+              mostrar_tabla_filtrable(
                   df_det[[
                       "FOLIO_GUIA",
                       "MUNICIPIO_DESTINO",
@@ -687,7 +746,8 @@ with tab_acuses:
                       "DIAS_ATRASO",
                       "RANGO_ATRASO",
                   ]],
-                  use_container_width=True,
+                  key_prefix=f"tbl_folios_{p_sel}",
+                  cols_filtro=["CLIENTE", "AREA", "ESTATUS_PENDIENTE"],
                   hide_index=True,
               )
 
@@ -747,10 +807,12 @@ with tab_acuses:
           df_hist_rezago,
           lista_plazas=PLAZAS_OFICIALES,
           modo_comparacion=modo_ac,
-      )
-      st.dataframe(
+      ).reset_index()
+      mostrar_tabla_filtrable(
           tabla_av_ac,
-          use_container_width=True,
+          key_prefix="tbl_av_acuses",
+          cols_filtro=["PLAZA"],
+          hide_index=True,
           column_config={
               "VARIACIÓN": st.column_config.NumberColumn(
                   "Variación",
@@ -918,7 +980,7 @@ with tab_arqueos:
                 use_container_width=True,
             )
 
-          st.dataframe(
+          mostrar_tabla_filtrable(
               df_kpi_det[[
                   "CIP",
                   "GUIA",
@@ -931,22 +993,23 @@ with tab_arqueos:
                   "DIAS_ATRASO",
                   "DETALLE_INCIDENCIA",
               ]],
-              use_container_width=True,
+              key_prefix=f"tbl_kpi_{modo_kpi}",
+              cols_filtro=["PLAZA", "CLIENTE", "MOVIMIENTO", "CONDICION"],
               hide_index=True,
           )
 
     # -----------------------------------------------------
-    # NUEVO: RESUMEN POR PLAZA Y POR CLIENTE EN ARQUEOS
+    # RESUMEN EN TABLA POR PLAZA Y VISTA DE CLIENTES HOMOLOGADA CON ACUSES
     # -----------------------------------------------------
     st.markdown("---")
     vista_ar_res = st.radio(
         "Resumen de carga (Ítems / CIPs y Guías):",
-        ["🏢 Por Plaza", "👥 Por Cliente"],
+        ["🏢 Por Plaza (Tabla Resumen)", "👥 Por Cliente"],
         horizontal=True,
         key="vista_res_arqueos",
     )
 
-    if vista_ar_res == "🏢 Por Plaza":
+    if vista_ar_res == "🏢 Por Plaza (Tabla Resumen)":
       plazas_ar_ord = (
           df_ar_f.groupby("PLAZA")["CIP"]
           .nunique()
@@ -956,34 +1019,57 @@ with tab_arqueos:
       if not plazas_ar_ord:
         st.info("Sin registros para mostrar por plaza.")
       else:
-        cols_p_ar = st.columns(5)
-        for idx, plaza in enumerate(plazas_ar_ord):
+        filas_resumen_ar = []
+        for plaza in plazas_ar_ord:
           sub_pa = df_ar_f[df_ar_f["PLAZA"] == plaza]
-          cips_p = int(sub_pa["CIP"].nunique())
-          guias_p = int(
-              sub_pa["GUIA"]
-              .replace({"": pd.NA, "NAN": pd.NA, "NONE": pd.NA})
-              .nunique()
-          )
-          vig_p = int(
-              sub_pa[sub_pa["CONDICION"] == "Vigente"]["CIP"].nunique()
-          )
-          ven_p = int(
-              sub_pa[sub_pa["CONDICION"] == "Vencida"]["CIP"].nunique()
-          )
+          filas_resumen_ar.append({
+              "Plaza": plaza,
+              "Ítems (CIPs)": int(sub_pa["CIP"].nunique()),
+              "Guías": int(
+                  sub_pa["GUIA"]
+                  .replace({"": pd.NA, "NAN": pd.NA, "NONE": pd.NA})
+                  .nunique()
+              ),
+              "Vigentes": int(
+                  sub_pa[sub_pa["CONDICION"] == "Vigente"]["CIP"].nunique()
+              ),
+              "Vencidos": int(
+                  sub_pa[sub_pa["CONDICION"] == "Vencida"]["CIP"].nunique()
+              ),
+              "Con Incidencia": int(
+                  sub_pa[sub_pa["TIENE_INCIDENCIA"] == "Con Incidencia"][
+                      "CIP"
+                  ].nunique()
+              ),
+              "Ocurres (OCU)": int(
+                  sub_pa[sub_pa["TIPO_GUIA"] == "OCU"]["CIP"].nunique()
+              ),
+          })
 
-          with cols_p_ar[idx % 5]:
-            with st.container(border=True):
-              st.markdown(f"**📍 {plaza}**")
-              st.markdown(f"**{cips_p:,}** ítems (CIPs)")
-              st.markdown(f"**{guias_p:,}** guías")
-              st.caption(f"🟢 Vig: **{vig_p:,}** | 🔴 Ven: **{ven_p:,}**")
+        df_resumen_top_ar = pd.DataFrame(filas_resumen_ar)
+        fila_total_ar = pd.DataFrame([{
+            "Plaza": "TOTAL",
+            "Ítems (CIPs)": int(df_resumen_top_ar["Ítems (CIPs)"].sum()),
+            "Guías": tot_guias,
+            "Vigentes": int(df_resumen_top_ar["Vigentes"].sum()),
+            "Vencidos": int(df_resumen_top_ar["Vencidos"].sum()),
+            "Con Incidencia": int(df_resumen_top_ar["Con Incidencia"].sum()),
+            "Ocurres (OCU)": int(df_resumen_top_ar["Ocurres (OCU)"].sum()),
+        }])
+        df_resumen_top_ar = pd.concat(
+            [df_resumen_top_ar, fila_total_ar], ignore_index=True
+        )
+
+        mostrar_tabla_filtrable(
+            df_resumen_top_ar,
+            key_prefix="tbl_resumen_ar",
+            cols_filtro=["Plaza"],
+            hide_index=True,
+        )
 
     else:
       buscar_cli_ar = (
-          st.text_input(
-              "🔍 Buscar cliente en arqueos:", "", key="buscar_cli_ar"
-          )
+          st.text_input("🔍 Buscar cliente:", "", key="buscar_cli_ar")
           .strip()
           .upper()
       )
@@ -1008,6 +1094,12 @@ with tab_arqueos:
               .replace({"": pd.NA, "NAN": pd.NA, "NONE": pd.NA})
               .nunique()
           )
+          vig_c = int(
+              sub_ca[sub_ca["CONDICION"] == "Vigente"]["CIP"].nunique()
+          )
+          ven_c = int(
+              sub_ca[sub_ca["CONDICION"] == "Vencida"]["CIP"].nunique()
+          )
           plazas_cli = (
               sub_ca.groupby("PLAZA")["CIP"]
               .nunique()
@@ -1019,16 +1111,16 @@ with tab_arqueos:
 
           with cols_c_ar[idx % 4]:
             with st.container(border=True):
-              st.markdown(f"**🏢 {cli}**")
-              st.markdown(
-                  f"**{cips_c:,}** ítems (CIPs) | **{guias_c:,}** guías"
-              )
+              st.markdown(f"### 🏢 {cli}")
+              st.markdown(f"**{cips_c:,}** ítems (CIPs)")
+              st.markdown(f"**{guias_c:,}** guías")
+              st.markdown(f"🟢 Vig: **{vig_c:,}** | 🔴 Ven: **{ven_c:,}**")
               st.caption(f"📍 Plazas: {plazas_txt}")
 
     st.markdown("---")
 
     # -----------------------------------------------------
-    # GRÁFICA PRINCIPAL Y DESGLOSES (EXISTENTES)
+    # GRÁFICA PRINCIPAL Y DESGLOSES
     # -----------------------------------------------------
     orden_grupos = ["Circuitos", "Rutas", "Inventario", "Otros Movimientos"]
 
@@ -1135,7 +1227,7 @@ with tab_arqueos:
               f"📋 Ver CIPs / Guías ({len(df_det_ar):,} CIPs /"
               f" {df_det_ar['GUIA'].nunique():,} guías)"
           ):
-            st.dataframe(
+            mostrar_tabla_filtrable(
                 df_det_ar[[
                     "CIP",
                     "GUIA",
@@ -1148,7 +1240,8 @@ with tab_arqueos:
                     "DIAS_ATRASO",
                     "DETALLE_INCIDENCIA",
                 ]],
-                use_container_width=True,
+                key_prefix=f"tbl_det_plaza_{plaza_clic}",
+                cols_filtro=["CLIENTE", "MOVIMIENTO", "CONDICION", "TIPO_GUIA"],
                 hide_index=True,
             )
 
@@ -1253,7 +1346,7 @@ with tab_arqueos:
               f"📋 Ver CIPs / Guías ({len(df_det_ar):,} CIPs /"
               f" {df_det_ar['GUIA'].nunique():,} guías)"
           ):
-            st.dataframe(
+            mostrar_tabla_filtrable(
                 df_det_ar[[
                     "CIP",
                     "GUIA",
@@ -1265,7 +1358,8 @@ with tab_arqueos:
                     "DIAS_ATRASO",
                     "DETALLE_INCIDENCIA",
                 ]],
-                use_container_width=True,
+                key_prefix=f"tbl_det_grupo_{sel_plaza_ar}_{grupo_clic}",
+                cols_filtro=["CLIENTE", "MOVIMIENTO", "CONDICION", "TIPO_GUIA"],
                 hide_index=True,
             )
 
@@ -1293,10 +1387,12 @@ with tab_arqueos:
 
       tabla_av_ar = construir_tabla_avances_compacta(
           hist_ar_f, lista_plazas=None, modo_comparacion=modo_ar
-      )
-      st.dataframe(
+      ).reset_index()
+      mostrar_tabla_filtrable(
           tabla_av_ar,
-          use_container_width=True,
+          key_prefix="tbl_av_arqueos",
+          cols_filtro=["PLAZA"],
+          hide_index=True,
           column_config={
               "VARIACIÓN": st.column_config.NumberColumn(
                   "Variación (CIPs)",
