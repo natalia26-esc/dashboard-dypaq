@@ -188,7 +188,6 @@ def construir_tabla_avances_compacta(
   base_vals = res[col_base]
   act_vals = res[col_actual]
 
-  # Variación negativa = bajaron los pendientes/guías en plaza (avance positivo)
   res["VARIACIÓN"] = act_vals - base_vals
 
   avances_pct = []
@@ -212,7 +211,7 @@ PLAZAS_OFICIALES = [
     "CANCUN",
     "MERIDA",
     "TUXTLA",
-    "TOLUCA",
+    "ESTADO DE MEXICO",
     "PUEBLA",
     "GUANAJUATO",
     "VILLAHERMOSA",
@@ -226,20 +225,20 @@ def unificar_plaza_acuses(estado_col_p, destino_col_o):
   edo = str(estado_col_p).strip().upper()
   dest = str(destino_col_o).strip().upper()
 
-  if dest == "METEPEC":
-    return "PUEBLA"
-  if dest in ["LEON", "LEÓN", "SILAO", "PUERTO RICO"]:
-    return "GUANAJUATO"
+  # 1. Excepciones específicas por destino/municipio
   if (
-      dest in ["TULTEPEC", "PARQUE INDUSTRIAL TOLUCA 2000"]
+      dest in ["METEPEC", "TULTEPEC", "PARQUE INDUSTRIAL TOLUCA 2000"]
       or "TOLUCA 2000" in dest
   ):
-    return "TOLUCA"
+    return "ESTADO DE MEXICO"
+  if dest in ["LEON", "LEÓN", "SILAO", "PUERTO RICO"]:
+    return "GUANAJUATO"
   if dest == "PALENQUE":
     return "VILLAHERMOSA"
   if dest in ["FELIPE CARRILLO PUERTO", "CHETUMAL"]:
     return "MERIDA"
 
+  # 2. Agrupación por Estado Destino (Columna P)
   if "QUINTANA" in edo:
     return "CANCUN"
   if "YUCATAN" in edo or "YUCATÁN" in edo:
@@ -259,7 +258,8 @@ def unificar_plaza_acuses(estado_col_p, destino_col_o):
   if "GUANAJUATO" in edo:
     return "GUANAJUATO"
 
-  return "TOLUCA"
+  # Estado de México, CDMX, D.F., etc.
+  return "ESTADO DE MEXICO"
 
 
 # ---------------------------------------------------------
@@ -389,7 +389,7 @@ def obtener_datos_acuses():
 
 
 # ---------------------------------------------------------
-# PROCESAMIENTO DE ARQUEOS (FILTRO FECHA PROMESA >= 01/01/2025)
+# PROCESAMIENTO DE ARQUEOS (BASE: COLUMNA A = CIP, FECHA PROMESA >= 01/01/2025)
 # ---------------------------------------------------------
 @st.cache_data(ttl=60)
 def obtener_datos_arqueos():
@@ -398,7 +398,8 @@ def obtener_datos_arqueos():
     return pd.DataFrame()
 
   cols = list(df.columns)
-  col_cip = "CIP" if "CIP" in cols else cols[0]
+  # Columna A (índice 0) es CIP = ítem individual
+  col_cip = cols[0] if len(cols) > 0 else "CIP"
   col_guia = "Guia" if "Guia" in cols else cols[1]
   col_mov = "Movimiento" if "Movimiento" in cols else cols[3]
   col_plaza_f = cols[5] if len(cols) > 5 else "D_Plaza"
@@ -410,6 +411,13 @@ def obtener_datos_arqueos():
   col_tipo_ent = "Tipo Entrega" if "Tipo Entrega" in cols else cols[33]
   col_inc = "Incidencia" if "Incidencia" in cols else cols[35]
 
+  # Garantizar que tomamos CIPs válidos de la columna A
+  cip_series = df[col_cip].astype(str).str.strip()
+  df = df[~cip_series.str.upper().isin(["", "NAN", "NONE", "NULL"])].copy()
+  df[col_cip] = cip_series[df.index]
+  df = df.drop_duplicates(subset=[col_cip]).copy()
+
+  # Excluir registros con Fecha Promesa anterior al 01/01/2025
   f_prom_s = pd.to_datetime(df[col_f_promesa], errors="coerce", dayfirst=True)
   df = df[f_prom_s.isna() | (f_prom_s >= pd.Timestamp("2025-01-01"))].copy()
   if df.empty:
@@ -523,7 +531,6 @@ with tab_acuses:
   if df_ac.empty:
     st.warning("No hay acuses pendientes registrados en la pestaña 'ACUSES'.")
   else:
-    # Guardar historial por PLAZA y RANGO_ATRASO para medir el avance real sobre rezagados (+5 días)
     resumen_hist_ac = (
         df_ac.groupby(["PLAZA", "RANGO_ATRASO"])
         .size()
@@ -685,6 +692,10 @@ with tab_acuses:
       df_hist_rezago = df_hist_ac[
           df_hist_ac["RANGO_ATRASO"] == "Más de 5 días"
       ].copy()
+      # Compatibilidad si había cortes anteriores guardados como TOLUCA
+      df_hist_rezago["PLAZA"] = df_hist_rezago["PLAZA"].replace(
+          {"TOLUCA": "ESTADO DE MEXICO"}
+      )
       tabla_av_ac = construir_tabla_avances_compacta(
           df_hist_rezago,
           lista_plazas=PLAZAS_OFICIALES,
@@ -696,7 +707,9 @@ with tab_acuses:
           column_config={
               "VARIACIÓN": st.column_config.NumberColumn(
                   "Variación",
-                  help="Negativo (-) significa que se cerraron acuses atrasados",
+                  help=(
+                      "Negativo (-) significa que se cerraron acuses atrasados"
+                  ),
                   format="%+d",
               ),
               "AVANCE (%)": st.column_config.ProgressColumn(
@@ -710,7 +723,7 @@ with tab_acuses:
 
 
 # =========================================================
-# PESTAÑA 2: ARQUEOS
+# PESTAÑA 2: ARQUEOS (BASE: COLUMNA A = CIP)
 # =========================================================
 with tab_arqueos:
   df_ar = obtener_datos_arqueos()
@@ -718,8 +731,11 @@ with tab_arqueos:
   if df_ar.empty:
     st.warning("La pestaña 'ARQUEOS' en Google Sheets está vacía.")
   else:
+    # Historial basado estrictamente en conteo de CIPs
     resumen_hist_ar = (
-        df_ar.groupby(["PLAZA", "CONDICION"]).size().reset_index(name="CANTIDAD")
+        df_ar.groupby(["PLAZA", "CONDICION"])["CIP"]
+        .nunique()
+        .reset_index(name="CANTIDAD")
     )
     df_hist_ar = registrar_historial_si_cambio(
         resumen_hist_ar, "ARQUEOS_HISTORIAL", "PLAZA", "CONDICION"
@@ -753,22 +769,36 @@ with tab_arqueos:
     if sel_cond != "Todas":
       df_ar_f = df_ar_f[df_ar_f["CONDICION"] == sel_cond]
 
-    tot_items = len(df_ar_f)
-    vig_items = len(df_ar_f[df_ar_f["CONDICION"] == "Vigente"])
-    ven_items = len(df_ar_f[df_ar_f["CONDICION"] == "Vencida"])
-    inc_items = len(df_ar_f[df_ar_f["TIENE_INCIDENCIA"] == "Con Incidencia"])
-    ocu_items = len(df_ar_f[df_ar_f["TIPO_GUIA"] == "OCU"])
+    # Conteo principal por CIP (Columna A) + referencia de Guías únicas
+    guias_validas = df_ar_f["GUIA"].replace(
+        {"": pd.NA, "NAN": pd.NA, "NONE": pd.NA}
+    )
+    tot_guias = int(guias_validas.nunique())
+    tot_cips = int(df_ar_f["CIP"].nunique())
+    vig_cips = int(
+        df_ar_f[df_ar_f["CONDICION"] == "Vigente"]["CIP"].nunique()
+    )
+    ven_cips = int(
+        df_ar_f[df_ar_f["CONDICION"] == "Vencida"]["CIP"].nunique()
+    )
+    inc_cips = int(
+        df_ar_f[df_ar_f["TIENE_INCIDENCIA"] == "Con Incidencia"][
+            "CIP"
+        ].nunique()
+    )
+    ocu_cips = int(df_ar_f[df_ar_f["TIPO_GUIA"] == "OCU"]["CIP"].nunique())
 
     if "kpi_arqueo_sel" not in st.session_state:
       st.session_state.kpi_arqueo_sel = None
 
-    ka1, ka2, ka3, ka4, ka5 = st.columns(5)
-    ka1.metric("📦 Carga Total (Ítems)", f"{tot_items:,}")
-    ka2.metric("🟢 Carga Vigente", f"{vig_items:,}")
-    ka3.metric("🔴 Carga Vencida", f"{ven_items:,}")
+    ka0, ka1, ka2, ka3, ka4, ka5 = st.columns(6)
+    ka0.metric("🧾 Total Guías", f"{tot_guias:,}")
+    ka1.metric("📦 Total CIPs (Ítems)", f"{tot_cips:,}")
+    ka2.metric("🟢 CIPs Vigentes", f"{vig_cips:,}")
+    ka3.metric("🔴 CIPs Vencidos", f"{ven_cips:,}")
 
     with ka4:
-      st.metric("⚠️ Con Incidencia", f"{inc_items:,}")
+      st.metric("⚠️ Con Incidencia", f"{inc_cips:,}")
       es_inc_sel = st.session_state.kpi_arqueo_sel == "INCIDENCIA"
       if st.button(
           "Ocultar data" if es_inc_sel else "🔍 Ver data",
@@ -780,7 +810,7 @@ with tab_arqueos:
         st.rerun()
 
     with ka5:
-      st.metric("🏢 Ocurres (OCU)", f"{ocu_items:,}")
+      st.metric("🏢 Ocurres (OCU)", f"{ocu_cips:,}")
       es_ocu_sel = st.session_state.kpi_arqueo_sel == "OCU"
       if st.button(
           "Ocultar data" if es_ocu_sel else "🔍 Ver data",
@@ -802,12 +832,14 @@ with tab_arqueos:
               df_ar_f["TIENE_INCIDENCIA"] == "Con Incidencia"
           ]
           ck1.subheader(
-              f"⚠️ Detalle de Carga con Incidencia ({len(df_kpi_det):,} ítems)"
+              f"⚠️ Detalle de CIPs con Incidencia ({len(df_kpi_det):,} CIPs /"
+              f" {df_kpi_det['GUIA'].nunique():,} guías)"
           )
         else:
           df_kpi_det = df_ar_f[df_ar_f["TIPO_GUIA"] == "OCU"]
           ck1.subheader(
-              f"🏢 Detalle de Carga en Ocurre — OCU ({len(df_kpi_det):,} ítems)"
+              f"🏢 Detalle de CIPs en Ocurre — OCU ({len(df_kpi_det):,} CIPs /"
+              f" {df_kpi_det['GUIA'].nunique():,} guías)"
           )
 
         if ck2.button("✖ Cerrar", key="cerrar_kpi_ar", use_container_width=True):
@@ -819,7 +851,7 @@ with tab_arqueos:
         else:
           r_k1, r_k2 = st.columns(2)
           with r_k1:
-            st.markdown("**Resumen por Plaza y Condición**")
+            st.markdown("**Resumen por Plaza y Condición (CIPs)**")
             st.dataframe(
                 pd.crosstab(
                     df_kpi_det["PLAZA"],
@@ -830,7 +862,7 @@ with tab_arqueos:
                 use_container_width=True,
             )
           with r_k2:
-            st.markdown("**Resumen por Movimiento**")
+            st.markdown("**Resumen por Movimiento (CIPs)**")
             st.dataframe(
                 pd.crosstab(
                     df_kpi_det["MOVIMIENTO"],
@@ -863,29 +895,29 @@ with tab_arqueos:
     orden_grupos = ["Circuitos", "Rutas", "Inventario", "Otros Movimientos"]
 
     if sel_plaza_ar == "Todas":
-      st.subheader("Movimiento / Estatus Actual por Plaza")
+      st.subheader("Movimiento / Estatus Actual por Plaza (CIPs)")
       st.caption(
           "💡 Haz clic en cualquier barra o color de una plaza para ver su"
           " desglose detallado abajo."
       )
 
       grp_plaza_mov = (
-          df_ar_f.groupby(["PLAZA", "GRUPO_MOVIMIENTO"])
-          .size()
-          .reset_index(name="Ítems")
+          df_ar_f.groupby(["PLAZA", "GRUPO_MOVIMIENTO"])["CIP"]
+          .nunique()
+          .reset_index(name="CIPs")
       )
       totales_plaza = (
-          grp_plaza_mov.groupby("PLAZA")["Ítems"]
+          grp_plaza_mov.groupby("PLAZA")["CIPs"]
           .sum()
           .reset_index()
-          .sort_values("Ítems", ascending=False)
+          .sort_values("CIPs", ascending=False)
       )
       orden_plazas = totales_plaza["PLAZA"].tolist()
 
       fig_mov = px.bar(
           grp_plaza_mov,
           x="PLAZA",
-          y="Ítems",
+          y="CIPs",
           color="GRUPO_MOVIMIENTO",
           barmode="stack",
           category_orders={
@@ -893,19 +925,19 @@ with tab_arqueos:
               "GRUPO_MOVIMIENTO": orden_grupos,
           },
           custom_data=["PLAZA", "GRUPO_MOVIMIENTO"],
-          hover_data={"PLAZA": True, "GRUPO_MOVIMIENTO": True, "Ítems": True},
+          hover_data={"PLAZA": True, "GRUPO_MOVIMIENTO": True, "CIPs": True},
           labels={"PLAZA": "Plaza", "GRUPO_MOVIMIENTO": "Tipo de Movimiento"},
       )
       fig_mov.add_scatter(
           x=totales_plaza["PLAZA"],
-          y=totales_plaza["Ítems"],
-          text=totales_plaza["Ítems"].apply(lambda x: f"<b>{x:,}</b>"),
+          y=totales_plaza["CIPs"],
+          text=totales_plaza["CIPs"].apply(lambda x: f"<b>{x:,}</b>"),
           mode="text",
           textposition="top center",
           showlegend=False,
           hoverinfo="skip",
       )
-      max_y = totales_plaza["Ítems"].max() if not totales_plaza.empty else 10
+      max_y = totales_plaza["CIPs"].max() if not totales_plaza.empty else 10
       fig_mov.update_yaxes(range=[0, max_y * 1.15])
       fig_mov.update_layout(clickmode="event+select")
 
@@ -942,7 +974,7 @@ with tab_arqueos:
 
           c_d1, c_d2 = st.columns(2)
           with c_d1:
-            st.markdown("**Desglose por Movimiento Exacto y Condición**")
+            st.markdown("**Desglose por Movimiento Exacto y Condición (CIPs)**")
             t_mov_cond = pd.crosstab(
                 df_det_ar["MOVIMIENTO"],
                 df_det_ar["CONDICION"],
@@ -952,7 +984,7 @@ with tab_arqueos:
             st.dataframe(t_mov_cond, use_container_width=True)
 
           with c_d2:
-            st.markdown("**Desglose por Tipo de Guía e Incidencia**")
+            st.markdown("**Desglose por Tipo de Guía e Incidencia (CIPs)**")
             t_guia_inc = pd.crosstab(
                 df_det_ar["TIPO_GUIA"],
                 df_det_ar["TIENE_INCIDENCIA"],
@@ -962,7 +994,8 @@ with tab_arqueos:
             st.dataframe(t_guia_inc, use_container_width=True)
 
           with st.expander(
-              f"📋 Ver Ítems / Guías ({len(df_det_ar):,} registros)"
+              f"📋 Ver CIPs / Guías ({len(df_det_ar):,} CIPs /"
+              f" {df_det_ar['GUIA'].nunique():,} guías)"
           ):
             st.dataframe(
                 df_det_ar[[
@@ -982,25 +1015,27 @@ with tab_arqueos:
             )
 
     else:
-      st.subheader(f"Movimiento / Estatus Actual — Plaza {sel_plaza_ar}")
+      st.subheader(
+          f"Movimiento / Estatus Actual — Plaza {sel_plaza_ar} (CIPs)"
+      )
       st.caption(
           "💡 Haz clic en cualquier barra o color para ver su desglose"
           " detallado abajo."
       )
 
       grp_mov = (
-          df_ar_f.groupby(["GRUPO_MOVIMIENTO", "MOVIMIENTO"])
-          .size()
-          .reset_index(name="Ítems")
+          df_ar_f.groupby(["GRUPO_MOVIMIENTO", "MOVIMIENTO"])["CIP"]
+          .nunique()
+          .reset_index(name="CIPs")
       )
       totales_grupo = (
-          grp_mov.groupby("GRUPO_MOVIMIENTO")["Ítems"].sum().reset_index()
+          grp_mov.groupby("GRUPO_MOVIMIENTO")["CIPs"].sum().reset_index()
       )
 
       fig_mov = px.bar(
           grp_mov,
           x="GRUPO_MOVIMIENTO",
-          y="Ítems",
+          y="CIPs",
           color="MOVIMIENTO",
           barmode="stack",
           category_orders={"GRUPO_MOVIMIENTO": orden_grupos},
@@ -1008,19 +1043,19 @@ with tab_arqueos:
           hover_data={
               "GRUPO_MOVIMIENTO": False,
               "MOVIMIENTO": True,
-              "Ítems": True,
+              "CIPs": True,
           },
       )
       fig_mov.add_scatter(
           x=totales_grupo["GRUPO_MOVIMIENTO"],
-          y=totales_grupo["Ítems"],
-          text=totales_grupo["Ítems"].apply(lambda x: f"<b>{x:,}</b>"),
+          y=totales_grupo["CIPs"],
+          text=totales_grupo["CIPs"].apply(lambda x: f"<b>{x:,}</b>"),
           mode="text",
           textposition="top center",
           showlegend=False,
           hoverinfo="skip",
       )
-      max_y = totales_grupo["Ítems"].max() if not totales_grupo.empty else 10
+      max_y = totales_grupo["CIPs"].max() if not totales_grupo.empty else 10
       fig_mov.update_yaxes(range=[0, max_y * 1.15])
       fig_mov.update_layout(clickmode="event+select")
 
@@ -1059,13 +1094,13 @@ with tab_arqueos:
 
           c_d1, c_d2 = st.columns(2)
           with c_d1:
-            st.markdown("**Condición (Vigente vs. Vencida)**")
+            st.markdown("**Condición (Vigente vs. Vencida — CIPs)**")
             st.dataframe(
                 df_det_ar["CONDICION"].value_counts().reset_index(),
                 use_container_width=True,
             )
           with c_d2:
-            st.markdown("**Tipo de Guía e Incidencias**")
+            st.markdown("**Tipo de Guía e Incidencias (CIPs)**")
             st.dataframe(
                 pd.crosstab(
                     df_det_ar["TIPO_GUIA"],
@@ -1077,7 +1112,8 @@ with tab_arqueos:
             )
 
           with st.expander(
-              f"📋 Ver Ítems / Guías ({len(df_det_ar):,} registros)"
+              f"📋 Ver CIPs / Guías ({len(df_det_ar):,} CIPs /"
+              f" {df_det_ar['GUIA'].nunique():,} guías)"
           ):
             st.dataframe(
                 df_det_ar[[
@@ -1095,10 +1131,12 @@ with tab_arqueos:
                 hide_index=True,
             )
 
-    # ÚNICA SECCIÓN DE AVANCE DE ENTREGAS EN ARQUEOS (SIN DUPLICIDAD)
+    # ÚNICA SECCIÓN DE AVANCE DE ENTREGAS EN ARQUEOS (BASE: CIPs)
     st.markdown("---")
     ca_av1, ca_av2 = st.columns([3, 2])
-    ca_av1.subheader("📈 Avance de Entregas por Plaza (Salida de Guías en Arqueo)")
+    ca_av1.subheader(
+        "📈 Avance de Entregas por Plaza (Salida de CIPs en Arqueo)"
+    )
     modo_ar = ca_av2.radio(
         "Comparar contra:",
         ["Corte Anterior", "Corte Inicial"],
@@ -1106,8 +1144,8 @@ with tab_arqueos:
         key="modo_av_ar",
     )
     st.caption(
-        "Al entregarse una guía desaparece del arqueo; el avance refleja la"
-        " reducción de ítems pendientes por plaza."
+        "Al entregarse un ítem (CIP) desaparece del arqueo; el avance refleja"
+        " la reducción de CIPs pendientes por plaza."
     )
 
     if not df_hist_ar.empty:
@@ -1123,8 +1161,11 @@ with tab_arqueos:
           use_container_width=True,
           column_config={
               "VARIACIÓN": st.column_config.NumberColumn(
-                  "Variación",
-                  help="Negativo (-) significa guías entregadas / salidas de plaza",
+                  "Variación (CIPs)",
+                  help=(
+                      "Negativo (-) significa CIPs entregados / salidas de"
+                      " plaza"
+                  ),
                   format="%+d",
               ),
               "AVANCE (%)": st.column_config.ProgressColumn(
