@@ -398,7 +398,6 @@ def obtener_datos_arqueos():
     return pd.DataFrame()
 
   cols = list(df.columns)
-  # Columna A (índice 0) es CIP = ítem individual
   col_cip = cols[0] if len(cols) > 0 else "CIP"
   col_guia = "Guia" if "Guia" in cols else cols[1]
   col_mov = "Movimiento" if "Movimiento" in cols else cols[3]
@@ -411,13 +410,11 @@ def obtener_datos_arqueos():
   col_tipo_ent = "Tipo Entrega" if "Tipo Entrega" in cols else cols[33]
   col_inc = "Incidencia" if "Incidencia" in cols else cols[35]
 
-  # Garantizar que tomamos CIPs válidos de la columna A
   cip_series = df[col_cip].astype(str).str.strip()
   df = df[~cip_series.str.upper().isin(["", "NAN", "NONE", "NULL"])].copy()
   df[col_cip] = cip_series[df.index]
   df = df.drop_duplicates(subset=[col_cip]).copy()
 
-  # Excluir registros con Fecha Promesa anterior al 01/01/2025
   f_prom_s = pd.to_datetime(df[col_f_promesa], errors="coerce", dayfirst=True)
   df = df[f_prom_s.isna() | (f_prom_s >= pd.Timestamp("2025-01-01"))].copy()
   if df.empty:
@@ -460,6 +457,14 @@ def obtener_datos_arqueos():
       .replace({"": "SIN MOVIMIENTO", "NAN": "SIN MOVIMIENTO"})
   )
 
+  clientes_ar_clean = (
+      df[col_cliente]
+      .astype(str)
+      .str.strip()
+      .str.upper()
+      .replace({"": "SIN CLIENTE", "NAN": "SIN CLIENTE", "NONE": "SIN CLIENTE"})
+  )
+
   def agrupar_movimiento(m):
     if m in ["EMBARQUE_CIRCUITO", "DESEMBARQUE_CIRCUITO"]:
       return "Circuitos"
@@ -495,7 +500,7 @@ def obtener_datos_arqueos():
       "CIP": df[col_cip].astype(str).str.strip(),
       "GUIA": df[col_guia].astype(str).str.strip(),
       "PLAZA": plazas_clean,
-      "CLIENTE": df[col_cliente].astype(str).str.strip().str.upper(),
+      "CLIENTE": clientes_ar_clean,
       "MOVIMIENTO": mov_raw,
       "GRUPO_MOVIMIENTO": mov_raw.apply(agrupar_movimiento),
       "TIPO_GUIA": df.apply(map_tipo_guia, axis=1),
@@ -540,6 +545,49 @@ with tab_acuses:
         resumen_hist_ac, "ACUSES_HISTORIAL", "PLAZA", "RANGO_ATRASO"
     )
 
+    # -----------------------------------------------------
+    # NUEVO: RESUMEN ESTRUCTURADO INICIAL DE ACUSES
+    # -----------------------------------------------------
+    total_acuses_global = len(df_ac)
+    st.markdown(f"### 📋 TOTAL ACUSES = `{total_acuses_global:,}`")
+
+    filas_resumen_ac = []
+    for plaza in PLAZAS_OFICIALES:
+      sub_p = df_ac[df_ac["PLAZA"] == plaza]
+      filas_resumen_ac.append({
+          "Plaza": plaza,
+          "Total": len(sub_p),
+          "0-5": len(sub_p[sub_p["RANGO_ATRASO"] == "0 a 5 días"]),
+          "+5": len(sub_p[sub_p["RANGO_ATRASO"] == "Más de 5 días"]),
+          "Operaciones": len(sub_p[sub_p["AREA"] == "OPERACIONES"]),
+          "Administración": len(sub_p[sub_p["AREA"] == "ADMINISTRACIÓN"]),
+          "Mesa de control": len(sub_p[sub_p["AREA"] == "MESA DE CONTROL"]),
+      })
+
+    df_resumen_top_ac = pd.DataFrame(filas_resumen_ac)
+    fila_total_ac = pd.DataFrame([{
+        "Plaza": "TOTAL",
+        "Total": int(df_resumen_top_ac["Total"].sum()),
+        "0-5": int(df_resumen_top_ac["0-5"].sum()),
+        "+5": int(df_resumen_top_ac["+5"].sum()),
+        "Operaciones": int(df_resumen_top_ac["Operaciones"].sum()),
+        "Administración": int(df_resumen_top_ac["Administración"].sum()),
+        "Mesa de control": int(df_resumen_top_ac["Mesa de control"].sum()),
+    }])
+    df_resumen_top_ac = pd.concat(
+        [df_resumen_top_ac, fila_total_ac], ignore_index=True
+    )
+
+    st.dataframe(
+        df_resumen_top_ac,
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.markdown("---")
+
+    # -----------------------------------------------------
+    # VISTA DE TARJETAS POR PLAZA O CLIENTE (EXISTENTE)
+    # -----------------------------------------------------
     col_v1, col_v2 = st.columns([2, 2])
     vista_ac = col_v1.radio(
         "Visualizar pendientes:",
@@ -672,7 +720,7 @@ with tab_acuses:
                   f"🟡 0 a 5 días: **{r_0_5}** | 🔴 +5 días: **{r_mas_5}**"
               )
 
-    # TABLA COMPACTA DE AVANCES POR PLAZA (ENFOCADA EN REZAGADOS > 5 DÍAS)
+    # TABLA COMPACTA DE AVANCES POR PLAZA
     st.markdown("---")
     c_av1, c_av2 = st.columns([3, 2])
     c_av1.subheader("📈 Avance por Plaza — Movimiento de Atrasados (+5 días)")
@@ -692,7 +740,6 @@ with tab_acuses:
       df_hist_rezago = df_hist_ac[
           df_hist_ac["RANGO_ATRASO"] == "Más de 5 días"
       ].copy()
-      # Compatibilidad si había cortes anteriores guardados como TOLUCA
       df_hist_rezago["PLAZA"] = df_hist_rezago["PLAZA"].replace(
           {"TOLUCA": "ESTADO DE MEXICO"}
       )
@@ -731,7 +778,6 @@ with tab_arqueos:
   if df_ar.empty:
     st.warning("La pestaña 'ARQUEOS' en Google Sheets está vacía.")
   else:
-    # Historial basado estrictamente en conteo de CIPs
     resumen_hist_ar = (
         df_ar.groupby(["PLAZA", "CONDICION"])["CIP"]
         .nunique()
@@ -769,7 +815,6 @@ with tab_arqueos:
     if sel_cond != "Todas":
       df_ar_f = df_ar_f[df_ar_f["CONDICION"] == sel_cond]
 
-    # Conteo principal por CIP (Columna A) + referencia de Guías únicas
     guias_validas = df_ar_f["GUIA"].replace(
         {"": pd.NA, "NAN": pd.NA, "NONE": pd.NA}
     )
@@ -890,8 +935,101 @@ with tab_arqueos:
               hide_index=True,
           )
 
+    # -----------------------------------------------------
+    # NUEVO: RESUMEN POR PLAZA Y POR CLIENTE EN ARQUEOS
+    # -----------------------------------------------------
+    st.markdown("---")
+    vista_ar_res = st.radio(
+        "Resumen de carga (Ítems / CIPs y Guías):",
+        ["🏢 Por Plaza", "👥 Por Cliente"],
+        horizontal=True,
+        key="vista_res_arqueos",
+    )
+
+    if vista_ar_res == "🏢 Por Plaza":
+      plazas_ar_ord = (
+          df_ar_f.groupby("PLAZA")["CIP"]
+          .nunique()
+          .sort_values(ascending=False)
+          .index.tolist()
+      )
+      if not plazas_ar_ord:
+        st.info("Sin registros para mostrar por plaza.")
+      else:
+        cols_p_ar = st.columns(5)
+        for idx, plaza in enumerate(plazas_ar_ord):
+          sub_pa = df_ar_f[df_ar_f["PLAZA"] == plaza]
+          cips_p = int(sub_pa["CIP"].nunique())
+          guias_p = int(
+              sub_pa["GUIA"]
+              .replace({"": pd.NA, "NAN": pd.NA, "NONE": pd.NA})
+              .nunique()
+          )
+          vig_p = int(
+              sub_pa[sub_pa["CONDICION"] == "Vigente"]["CIP"].nunique()
+          )
+          ven_p = int(
+              sub_pa[sub_pa["CONDICION"] == "Vencida"]["CIP"].nunique()
+          )
+
+          with cols_p_ar[idx % 5]:
+            with st.container(border=True):
+              st.markdown(f"**📍 {plaza}**")
+              st.markdown(f"**{cips_p:,}** ítems (CIPs)")
+              st.markdown(f"**{guias_p:,}** guías")
+              st.caption(f"🟢 Vig: **{vig_p:,}** | 🔴 Ven: **{ven_p:,}**")
+
+    else:
+      buscar_cli_ar = (
+          st.text_input(
+              "🔍 Buscar cliente en arqueos:", "", key="buscar_cli_ar"
+          )
+          .strip()
+          .upper()
+      )
+      clientes_ar_ord = (
+          df_ar_f.groupby("CLIENTE")["CIP"]
+          .nunique()
+          .sort_values(ascending=False)
+          .index.tolist()
+      )
+      if buscar_cli_ar:
+        clientes_ar_ord = [c for c in clientes_ar_ord if buscar_cli_ar in c]
+
+      if not clientes_ar_ord:
+        st.info("No se encontraron clientes con ese criterio.")
+      else:
+        cols_c_ar = st.columns(4)
+        for idx, cli in enumerate(clientes_ar_ord):
+          sub_ca = df_ar_f[df_ar_f["CLIENTE"] == cli]
+          cips_c = int(sub_ca["CIP"].nunique())
+          guias_c = int(
+              sub_ca["GUIA"]
+              .replace({"": pd.NA, "NAN": pd.NA, "NONE": pd.NA})
+              .nunique()
+          )
+          plazas_cli = (
+              sub_ca.groupby("PLAZA")["CIP"]
+              .nunique()
+              .sort_values(ascending=False)
+          )
+          plazas_txt = ", ".join(
+              [f"{p} ({cnt:,})" for p, cnt in plazas_cli.items()]
+          )
+
+          with cols_c_ar[idx % 4]:
+            with st.container(border=True):
+              st.markdown(f"**🏢 {cli}**")
+              st.markdown(
+                  f"**{cips_c:,}** ítems (CIPs) | **{guias_c:,}** guías"
+              )
+              st.caption(f"📍 Plazas: {plazas_txt}")
+
     st.markdown("---")
 
+    # -----------------------------------------------------
+    # GRÁFICA PRINCIPAL Y DESGLOSES (EXISTENTES)
+    # -----------------------------------------------------
     orden_grupos = ["Circuitos", "Rutas", "Inventario", "Otros Movimientos"]
 
     if sel_plaza_ar == "Todas":
